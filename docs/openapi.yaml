@@ -1,0 +1,202 @@
+openapi: 3.0.3
+info:
+  title: UpTime API
+  version: dev
+  description: Self-hosted uptime and synthetic monitoring API.
+servers:
+  - url: http://localhost:8008
+security:
+  - bearerAuth: []
+paths:
+  /health:
+    get:
+      security: []
+      responses:
+        "200":
+          description: Health status
+  /health-check:
+    get:
+      security: []
+      responses:
+        "200":
+          description: Backwards-compatible health status
+  /ping-endpoint:
+    post:
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [endpoint]
+              properties:
+                endpoint:
+                  type: string
+      responses:
+        "200":
+          description: Manual HTTP check result
+  /api/v1/check:
+    post:
+      summary: Run an ad-hoc check
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/MonitorInput"
+      responses:
+        "200":
+          description: Check result
+  /api/v1/monitors:
+    get:
+      summary: List monitors
+      responses:
+        "200":
+          description: Monitor list
+    post:
+      summary: Create monitor
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/MonitorInput"
+      responses:
+        "201":
+          description: Created monitor
+  /api/v1/monitors/{id}:
+    get:
+      summary: Get monitor
+      parameters:
+        - $ref: "#/components/parameters/id"
+      responses:
+        "200":
+          description: Monitor
+    put:
+      summary: Update monitor
+      parameters:
+        - $ref: "#/components/parameters/id"
+      responses:
+        "200":
+          description: Updated monitor
+    delete:
+      summary: Delete monitor
+      parameters:
+        - $ref: "#/components/parameters/id"
+      responses:
+        "200":
+          description: Deleted
+  /api/v1/monitors/{id}/check-now:
+    post:
+      summary: Run a stored monitor immediately
+      parameters:
+        - $ref: "#/components/parameters/id"
+      responses:
+        "200":
+          description: Check result
+  /api/v1/monitors/{id}/results:
+    get:
+      summary: List monitor results
+      parameters:
+        - $ref: "#/components/parameters/id"
+      responses:
+        "200":
+          description: Check results
+  /api/v1/check-results:
+    get:
+      summary: List check results
+      parameters:
+        - name: monitorId
+          in: query
+          schema: { type: string }
+        - name: status
+          in: query
+          schema: { type: string, enum: [up, down, degraded] }
+        - name: limit
+          in: query
+          schema: { type: integer }
+        - name: offset
+          in: query
+          schema: { type: integer }
+      responses:
+        "200":
+          description: Check results
+  /api/v1/incidents:
+    get:
+      summary: List incidents
+      responses:
+        "200":
+          description: Incident list
+  /api/v1/incidents/{id}:
+    get:
+      summary: Get incident
+      parameters:
+        - $ref: "#/components/parameters/id"
+      responses:
+        "200":
+          description: Incident
+  /api/v1/incidents/{id}/resolve:
+    post:
+      summary: Resolve incident
+      parameters:
+        - $ref: "#/components/parameters/id"
+      responses:
+        "200":
+          description: Resolved incident
+  /api/v1/stats/overview:
+    get:
+      summary: Overview stats
+      responses:
+        "200":
+          description: Overview stats
+  /api/v1/notification-channels:
+    get:
+      summary: List notification channels
+      responses:
+        "200":
+          description: Channels
+    post:
+      summary: Create notification channel
+      responses:
+        "201":
+          description: Created channel
+  /api/v1/api-keys:
+    get:
+      summary: List API keys
+      responses:
+        "200":
+          description: API keys without raw key values
+    post:
+      summary: Create API key
+      responses:
+        "201":
+          description: Created key with one-time raw value
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+  parameters:
+    id:
+      name: id
+      in: path
+      required: true
+      schema:
+        type: string
+  schemas:
+    MonitorInput:
+      type: object
+      required: [name, type, target]
+      properties:
+        name: { type: string }
+        type: { type: string, enum: [http, tcp, dns, tls, keyword] }
+        target: { type: string }
+        method: { type: string, example: GET }
+        expectedStatus: { type: integer, example: 200 }
+        expectedKeyword: { type: string }
+        timeoutSeconds: { type: integer, example: 10 }
+        intervalSeconds: { type: integer, example: 60 }
+        failureThreshold: { type: integer, example: 3 }
+        enabled: { type: boolean }
+

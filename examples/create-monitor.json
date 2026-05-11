@@ -1,0 +1,12 @@
+{
+  "name": "Example Website",
+  "type": "http",
+  "target": "https://example.com",
+  "method": "GET",
+  "expectedStatus": 200,
+  "timeoutSeconds": 10,
+  "intervalSeconds": 60,
+  "failureThreshold": 3,
+  "enabled": true
+}
+

@@ -1,0 +1,83 @@
+services:
+  api:
+    build: .
+    command: sh -c "./uptime-migrate && ./uptime-api"
+    environment:
+      APP_ENV: development
+      APP_PORT: 8008
+      DATABASE_URL: postgres://uptime:uptime@postgres:5432/uptime?sslmode=disable
+      REDIS_URL: redis://redis:6379/0
+      UPTIME_BOOTSTRAP_API_KEY: dev_admin_key
+      ALLOW_PRIVATE_TARGETS: "false"
+      CHECK_WORKER_COUNT: 10
+      DEFAULT_CHECK_TIMEOUT_SECONDS: 10
+      LOG_LEVEL: info
+    ports:
+      - "8008:8008"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_started
+
+  worker:
+    build: .
+    command: sh -c "./uptime-migrate && ./uptime-worker"
+    environment:
+      APP_ENV: development
+      DATABASE_URL: postgres://uptime:uptime@postgres:5432/uptime?sslmode=disable
+      REDIS_URL: redis://redis:6379/0
+      UPTIME_BOOTSTRAP_API_KEY: dev_admin_key
+      ALLOW_PRIVATE_TARGETS: "false"
+      CHECK_WORKER_COUNT: 10
+      DEFAULT_CHECK_TIMEOUT_SECONDS: 10
+      LOG_LEVEL: info
+    ports:
+      - "8009:8009"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_started
+
+  postgres:
+    image: postgres:16
+    environment:
+      POSTGRES_USER: uptime
+      POSTGRES_PASSWORD: uptime
+      POSTGRES_DB: uptime
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U uptime -d uptime"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+
+  redis:
+    image: redis:7
+
+  prometheus:
+    image: prom/prometheus:v2.55.0
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./deployments/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+    depends_on:
+      - api
+      - worker
+
+  grafana:
+    image: grafana/grafana:11.2.2
+    ports:
+      - "3000:3000"
+    environment:
+      GF_SECURITY_ADMIN_PASSWORD: admin
+    volumes:
+      - ./deployments/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./deployments/grafana/dashboards:/var/lib/grafana/dashboards:ro
+    depends_on:
+      - prometheus
+
+volumes:
+  postgres-data:

@@ -1,0 +1,19 @@
+{
+  "title": "UpTime",
+  "schemaVersion": 39,
+  "panels": [
+    {
+      "title": "Checks",
+      "type": "timeseries",
+      "targets": [{ "expr": "rate(uptime_checks_total[5m])", "legendFormat": "{{monitor_type}} {{status}}" }],
+      "gridPos": { "x": 0, "y": 0, "w": 12, "h": 8 }
+    },
+    {
+      "title": "Worker Jobs",
+      "type": "timeseries",
+      "targets": [{ "expr": "rate(uptime_worker_jobs_completed_total[5m])", "legendFormat": "completed" }],
+      "gridPos": { "x": 12, "y": 0, "w": 12, "h": 8 }
+    }
+  ]
+}
+
