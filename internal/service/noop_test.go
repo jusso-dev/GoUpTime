@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"time"
 
 	"github.com/jusso-dev/uptime/internal/models"
 )
@@ -43,6 +44,9 @@ func (StoreNoop) ResolveIncident(context.Context, string) (models.Incident, erro
 func (StoreNoop) ListNotificationChannels(context.Context) ([]models.NotificationChannel, error) {
 	return nil, nil
 }
+func (StoreNoop) GetNotificationChannel(context.Context, string) (models.NotificationChannel, error) {
+	return models.NotificationChannel{}, nil
+}
 func (StoreNoop) CreateNotificationChannel(context.Context, models.NotificationChannel) (models.NotificationChannel, error) {
 	return models.NotificationChannel{}, nil
 }
@@ -63,3 +67,8 @@ func (StoreNoop) RevokeAPIKey(context.Context, string) error                    
 func (StoreNoop) OverviewStats(context.Context) (models.OverviewStats, error) {
 	return models.OverviewStats{}, nil
 }
+func (StoreNoop) UpsertWorkerHeartbeat(context.Context, models.WorkerHeartbeat) error { return nil }
+func (StoreNoop) ListWorkerHeartbeats(context.Context, time.Time) ([]models.WorkerHeartbeat, error) {
+	return nil, nil
+}
+func (StoreNoop) DeleteWorkerHeartbeat(context.Context, string) error { return nil }

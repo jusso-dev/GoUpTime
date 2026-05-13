@@ -1,3 +1,10 @@
+// Command uptime-worker runs the scheduler and check execution pool.
+//
+// Exit codes:
+//
+//	0 — clean shutdown after SIGINT/SIGTERM
+//	1 — startup failure (config, db)
+//	2 — runtime failure (worker or metrics server died unexpectedly)
 package main
 
 import (
@@ -22,18 +29,29 @@ import (
 )
 
 func main() {
-	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
-	defer stop()
+	if code := run(); code != 0 {
+		os.Exit(code)
+	}
+}
+
+func run() int {
+	bootLogger := slog.New(slog.NewJSONHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelInfo}))
 
 	cfg, err := config.Load()
 	if err != nil {
-		panic(err)
+		bootLogger.Error("config load failed", "error", err)
+		return 1
 	}
-	logger := slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{Level: cfg.LogLevel}))
-	pool, err := repository.Open(ctx, cfg.DatabaseURL)
+	logger := slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{Level: cfg.LogLevel})).
+		With("component", "worker", "env", cfg.AppEnv, "version", cfg.Version)
+
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+
+	pool, err := repository.Open(ctx, cfg.DatabaseURL, repository.DefaultPoolConfig())
 	if err != nil {
 		logger.Error("database open failed", "error", err)
-		os.Exit(1)
+		return 1
 	}
 	defer pool.Close()
 
@@ -45,24 +63,68 @@ func main() {
 		UserAgent:           cfg.HTTPUserAgent,
 		TLSExpiryWarnDays:   cfg.TLSExpiryWarnDays,
 	})
-	notifier := notifications.NewService(store, cfg.AllowPrivateTargets)
+	notifier := notifications.NewService(store, notifications.Options{
+		AllowPrivateTargets: cfg.AllowPrivateTargets,
+		SigningSecret:       cfg.WebhookSigningSecret,
+		PerAttemptTimeout:   cfg.WebhookTimeout(),
+		MaxRetries:          cfg.WebhookMaxRetries,
+		UserAgent:           cfg.HTTPUserAgent,
+	})
 	monitorSvc := service.NewMonitoringService(store, registry, notifier, m, true)
 	w := workerpkg.New(cfg, store, monitorSvc, m, logger)
 
-	metricsServer := &http.Server{Addr: ":8009", Handler: promhttp.Handler(), ReadHeaderTimeout: 5 * time.Second}
+	metricsServer := &http.Server{
+		Addr:              cfg.MetricsAddr(),
+		Handler:           promhttp.Handler(),
+		ReadHeaderTimeout: 5 * time.Second,
+		ErrorLog:          slog.NewLogLogger(logger.Handler(), slog.LevelError),
+	}
+
+	metricsErr := make(chan error, 1)
+	workerErr := make(chan error, 1)
+
 	go func() {
+		logger.Info("metrics listening", "addr", cfg.MetricsAddr())
 		if err := metricsServer.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
-			logger.Error("worker metrics stopped", "error", err)
+			metricsErr <- err
 		}
+		close(metricsErr)
 	}()
 	go func() {
 		if err := w.Run(ctx); err != nil && !errors.Is(err, context.Canceled) {
-			logger.Error("worker stopped", "error", err)
+			workerErr <- err
+		}
+		close(workerErr)
+	}()
+
+	exitCode := 0
+	select {
+	case <-ctx.Done():
+		logger.Info("shutdown signal received")
+	case err, ok := <-metricsErr:
+		if ok && err != nil {
+			logger.Error("metrics server crashed", "error", err)
+			exitCode = 2
 			stop()
 		}
-	}()
-	<-ctx.Done()
-	shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	case err, ok := <-workerErr:
+		if ok && err != nil {
+			logger.Error("worker crashed", "error", err)
+			exitCode = 2
+			stop()
+		}
+	}
+
+	shutdownCtx, cancel := context.WithTimeout(context.Background(), cfg.ShutdownTimeout())
 	defer cancel()
-	_ = metricsServer.Shutdown(shutdownCtx)
+	if err := metricsServer.Shutdown(shutdownCtx); err != nil {
+		logger.Error("metrics shutdown failed", "error", err)
+		_ = metricsServer.Close()
+	}
+	// Wait for worker to drain.
+	if err, ok := <-workerErr; ok && err != nil {
+		logger.Error("worker exited with error", "error", err)
+	}
+	logger.Info("worker stopped")
+	return exitCode
 }

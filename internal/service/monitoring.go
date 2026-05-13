@@ -1,3 +1,7 @@
+// Package service contains business logic that sits between the HTTP/worker
+// layers and the storage layer. MonitoringService is the orchestrator: it
+// runs a check, persists the result, updates the monitor's status, and
+// applies the incident state machine.
 package service
 
 import (
@@ -12,6 +16,11 @@ import (
 	"github.com/jusso-dev/uptime/internal/repository"
 )
 
+// notificationTimeout caps the lifetime of a fire-and-forget notification
+// dispatched after the originating check completes. Independent from the
+// caller's context so a finishing HTTP request doesn't kill the webhook.
+const notificationTimeout = 30 * time.Second
+
 type MonitoringService struct {
 	store    repository.Store
 	checkers checks.Registry
@@ -24,6 +33,11 @@ func NewMonitoringService(store repository.Store, checkers checks.Registry, noti
 	return &MonitoringService{store: store, checkers: checkers, notify: notifier, metrics: m, persist: persist}
 }
 
+// RunCheck executes a single check, persists the result (if configured), and
+// updates incident state. The returned error preserves the underlying check
+// failure so callers can distinguish "check ran and target was down" (nil
+// error, result.Success == false) from "we could not run the check" (non-nil
+// error, result may be empty).
 func (s *MonitoringService) RunCheck(ctx context.Context, monitor models.Monitor) (models.CheckResult, error) {
 	checker, err := s.checkers.For(monitor.Type)
 	if err != nil {
@@ -56,35 +70,41 @@ func (s *MonitoringService) RunCheck(ctx context.Context, monitor models.Monitor
 	return saved, checkErr
 }
 
+// applyIncidentRules implements the incident state machine:
+//   - on success: clear any open incident and notify "resolved"
+//   - on failure: bump consecutive failure count and open a new incident
+//     once the configured threshold is reached
+//
+// Notifications are dispatched in a goroutine with a fresh context so they
+// can outlive the originating request without exposing the caller's context
+// to long network operations.
 func (s *MonitoringService) applyIncidentRules(ctx context.Context, monitor models.Monitor, result models.CheckResult) error {
 	status := result.Status
 	if result.Success && status != models.StatusDegraded {
 		status = models.StatusUp
 	}
 	if err := s.store.UpdateMonitorStatus(ctx, monitor.ID, status); err != nil {
-		return err
+		return fmt.Errorf("update monitor status: %w", err)
 	}
 
 	open, err := s.store.GetOpenIncident(ctx, monitor.ID)
 	if err != nil {
-		return err
+		return fmt.Errorf("lookup open incident: %w", err)
 	}
 	if result.Success {
 		if open != nil {
 			resolved, err := s.store.ResolveIncident(ctx, open.ID)
 			if err != nil {
-				return err
+				return fmt.Errorf("resolve incident: %w", err)
 			}
-			if s.notify != nil {
-				go s.notify.SendIncidentResolved(context.Background(), monitor, resolved)
-			}
+			s.dispatchResolved(monitor, resolved)
 		}
 		return nil
 	}
 
 	failures, err := s.store.CountConsecutiveFailures(ctx, monitor.ID)
 	if err != nil {
-		return err
+		return fmt.Errorf("count consecutive failures: %w", err)
 	}
 	threshold := monitor.FailureThreshold
 	if threshold <= 0 {
@@ -106,10 +126,31 @@ func (s *MonitoringService) applyIncidentRules(ctx context.Context, monitor mode
 		ConsecutiveFailures: failures,
 	})
 	if err != nil {
-		return err
+		return fmt.Errorf("open incident: %w", err)
 	}
-	if s.notify != nil {
-		go s.notify.SendIncidentOpened(context.Background(), monitor, incident)
-	}
+	s.dispatchOpened(monitor, incident)
 	return nil
 }
+
+func (s *MonitoringService) dispatchOpened(monitor models.Monitor, incident models.Incident) {
+	if s.notify == nil {
+		return
+	}
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), notificationTimeout)
+		defer cancel()
+		s.notify.SendIncidentOpened(ctx, monitor, incident)
+	}()
+}
+
+func (s *MonitoringService) dispatchResolved(monitor models.Monitor, incident models.Incident) {
+	if s.notify == nil {
+		return
+	}
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), notificationTimeout)
+		defer cancel()
+		s.notify.SendIncidentResolved(ctx, monitor, incident)
+	}()
+}
+

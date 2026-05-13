@@ -3,6 +3,7 @@ package checks
 import (
 	"context"
 	"crypto/tls"
+	"errors"
 	"fmt"
 	"net"
 	"time"
@@ -34,7 +35,10 @@ func (c TLSChecker) Check(ctx context.Context, monitor models.Monitor) (models.C
 
 	dialer := &tls.Dialer{
 		NetDialer: &net.Dialer{Timeout: timeout},
-		Config:    &tls.Config{ServerName: host, MinVersion: tls.VersionTLS12},
+		Config: &tls.Config{
+			ServerName: host,
+			MinVersion: tls.VersionTLS12,
+		},
 	}
 	start := time.Now()
 	conn, err := dialer.DialContext(checkCtx, "tcp", net.JoinHostPort(host, port))
@@ -43,35 +47,55 @@ func (c TLSChecker) Check(ctx context.Context, monitor models.Monitor) (models.C
 	result.TLSHandshakeMS = result.TotalMS
 	result.ResponseTimeMS = result.TotalMS
 	if err != nil {
-		result.Error = fmt.Sprintf("tls handshake failed: %v", err)
+		var certErr *tls.CertificateVerificationError
+		switch {
+		case errors.As(err, &certErr):
+			result.Error = fmt.Sprintf("tls certificate verification failed: %v", certErr)
+		case errors.Is(err, context.DeadlineExceeded):
+			result.Error = fmt.Sprintf("tls handshake to %s:%s timed out after %s", host, port, timeout)
+		default:
+			result.Error = fmt.Sprintf("tls handshake to %s:%s failed: %v", host, port, err)
+		}
 		return result, err
 	}
 	defer conn.Close()
 
-	state := conn.(*tls.Conn).ConnectionState()
+	tlsConn, ok := conn.(*tls.Conn)
+	if !ok {
+		err := fmt.Errorf("unexpected connection type %T from tls dialer", conn)
+		result.Error = err.Error()
+		return result, err
+	}
+	state := tlsConn.ConnectionState()
 	if len(state.PeerCertificates) == 0 {
-		err := fmt.Errorf("no peer certificate")
+		err := fmt.Errorf("server returned no peer certificate")
 		result.Error = err.Error()
 		return result, err
 	}
 	leaf := state.PeerCertificates[0]
 	warnDays := c.Options.TLSExpiryWarnDays
-	if warnDays == 0 {
+	if warnDays <= 0 {
 		warnDays = 14
 	}
 	result.Success = true
 	result.Status = TLSExpiryStatus(leaf.NotAfter, warnDays, time.Now())
-	if result.Status == models.StatusDegraded {
-		result.Error = fmt.Sprintf("certificate expires at %s", leaf.NotAfter.UTC().Format(time.RFC3339))
+	switch result.Status {
+	case models.StatusDown:
+		result.Success = false
+		result.Error = fmt.Sprintf("certificate expired at %s", leaf.NotAfter.UTC().Format(time.RFC3339))
+	case models.StatusDegraded:
+		result.Error = fmt.Sprintf("certificate expires soon at %s", leaf.NotAfter.UTC().Format(time.RFC3339))
 	}
 	return result, nil
 }
 
+// TLSExpiryStatus classifies a certificate's NotAfter relative to now:
+// expired => down, within warnDays of expiry => degraded, otherwise up.
 func TLSExpiryStatus(notAfter time.Time, warnDays int, now time.Time) models.CheckStatus {
 	if warnDays <= 0 {
 		warnDays = 14
 	}
-	if notAfter.Before(now) {
+	if !notAfter.After(now) {
 		return models.StatusDown
 	}
 	if notAfter.Sub(now) <= time.Duration(warnDays)*24*time.Hour {

@@ -21,17 +21,20 @@ const (
 	IncidentResolved IncidentStatus = "resolved"
 )
 
+// Monitor is the canonical synthetic-check definition. Status, CreatedAt,
+// and UpdatedAt are server-managed; clients can submit them but the API
+// layer zeroes Status on create so users cannot manufacture "up" state.
 type Monitor struct {
 	ID               string      `json:"id"`
-	Name             string      `json:"name" binding:"required"`
+	Name             string      `json:"name" binding:"required,min=1,max=120"`
 	Type             MonitorType `json:"type" binding:"required,oneof=http tcp dns tls keyword"`
-	Target           string      `json:"target" binding:"required"`
-	Method           string      `json:"method"`
-	ExpectedStatus   int         `json:"expectedStatus"`
-	ExpectedKeyword  string      `json:"expectedKeyword"`
-	TimeoutSeconds   int         `json:"timeoutSeconds"`
-	IntervalSeconds  int         `json:"intervalSeconds"`
-	FailureThreshold int         `json:"failureThreshold"`
+	Target           string      `json:"target" binding:"required,min=1,max=2048"`
+	Method           string      `json:"method" binding:"omitempty,oneof=GET HEAD"`
+	ExpectedStatus   int         `json:"expectedStatus" binding:"omitempty,min=100,max=599"`
+	ExpectedKeyword  string      `json:"expectedKeyword" binding:"omitempty,max=512"`
+	TimeoutSeconds   int         `json:"timeoutSeconds" binding:"omitempty,min=1,max=300"`
+	IntervalSeconds  int         `json:"intervalSeconds" binding:"omitempty,min=10,max=86400"`
+	FailureThreshold int         `json:"failureThreshold" binding:"omitempty,min=1,max=100"`
 	Enabled          bool        `json:"enabled"`
 	Status           CheckStatus `json:"status"`
 	CreatedAt        time.Time   `json:"createdAt"`
@@ -71,9 +74,9 @@ type Incident struct {
 
 type NotificationChannel struct {
 	ID        string    `json:"id"`
-	Name      string    `json:"name" binding:"required"`
+	Name      string    `json:"name" binding:"required,min=1,max=120"`
 	Type      string    `json:"type" binding:"required,oneof=webhook"`
-	URL       string    `json:"url,omitempty" binding:"required"`
+	URL       string    `json:"url,omitempty" binding:"required,url,max=2048"`
 	Enabled   bool      `json:"enabled"`
 	CreatedAt time.Time `json:"createdAt"`
 	UpdatedAt time.Time `json:"updatedAt"`
@@ -106,4 +109,30 @@ type ResultFilter struct {
 	CheckedBefore *time.Time
 	Limit         int
 	Offset        int
+}
+
+// WorkerHeartbeat is the periodic liveness + state snapshot a worker
+// process writes to the database so the API can surface a "what's running
+// right now" view without sharing memory across processes.
+//
+// InFlight is the set of monitor IDs currently being checked at the moment
+// the heartbeat was written; ordering is not stable. JobsCompleted and
+// JobsFailed are monotonic counters scoped to the worker's lifetime — they
+// reset when the process restarts.
+type WorkerHeartbeat struct {
+	InstanceID     string    `json:"instanceId"`
+	Hostname       string    `json:"hostname"`
+	Version        string    `json:"version"`
+	StartedAt      time.Time `json:"startedAt"`
+	LastSeenAt     time.Time `json:"lastSeenAt"`
+	WorkerCount    int       `json:"workerCount"`
+	ActiveJobs     int       `json:"activeJobs"`
+	QueueDepth     int       `json:"queueDepth"`
+	QueueCapacity  int       `json:"queueCapacity"`
+	JobsCompleted  int64     `json:"jobsCompleted"`
+	JobsFailed     int64     `json:"jobsFailed"`
+	InFlight       []string  `json:"inFlight"`
+	// Stale is set by the API when LastSeenAt is older than the freshness
+	// window. Workers never write to it.
+	Stale bool `json:"stale,omitempty"`
 }

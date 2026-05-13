@@ -2,12 +2,17 @@ package repository
 
 import (
 	"context"
+	"time"
 
 	"github.com/jusso-dev/uptime/internal/models"
 )
 
+// Store is the persistence boundary used by services and HTTP handlers. The
+// interface keeps SQL out of the rest of the codebase and gives tests a
+// natural seam for fakes (see internal/service/StoreNoop).
 type Store interface {
 	Ping(ctx context.Context) error
+
 	CreateMonitor(ctx context.Context, monitor models.Monitor) (models.Monitor, error)
 	ListMonitors(ctx context.Context) ([]models.Monitor, error)
 	ListEnabledMonitors(ctx context.Context) ([]models.Monitor, error)
@@ -27,6 +32,7 @@ type Store interface {
 	ResolveIncident(ctx context.Context, id string) (models.Incident, error)
 
 	ListNotificationChannels(ctx context.Context) ([]models.NotificationChannel, error)
+	GetNotificationChannel(ctx context.Context, id string) (models.NotificationChannel, error)
 	CreateNotificationChannel(ctx context.Context, channel models.NotificationChannel) (models.NotificationChannel, error)
 	UpdateNotificationChannel(ctx context.Context, channel models.NotificationChannel) (models.NotificationChannel, error)
 	DeleteNotificationChannel(ctx context.Context, id string) error
@@ -39,4 +45,8 @@ type Store interface {
 	RevokeAPIKey(ctx context.Context, id string) error
 
 	OverviewStats(ctx context.Context) (models.OverviewStats, error)
+
+	UpsertWorkerHeartbeat(ctx context.Context, hb models.WorkerHeartbeat) error
+	ListWorkerHeartbeats(ctx context.Context, since time.Time) ([]models.WorkerHeartbeat, error)
+	DeleteWorkerHeartbeat(ctx context.Context, instanceID string) error
 }

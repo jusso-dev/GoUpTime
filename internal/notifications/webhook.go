@@ -1,11 +1,22 @@
+// Package notifications delivers incident lifecycle events to user-supplied
+// webhook URLs. Deliveries are bounded (timeout + retry budget) and signed
+// when a shared secret is configured so receivers can authenticate payloads.
 package notifications
 
 import (
 	"bytes"
 	"context"
+	"crypto/hmac"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
+	mathrand "math/rand/v2"
 	"net/http"
+	"strconv"
+	"sync"
 	"time"
 
 	"github.com/jusso-dev/uptime/internal/checks"
@@ -13,22 +24,54 @@ import (
 	"github.com/jusso-dev/uptime/internal/repository"
 )
 
-type Service struct {
-	store               repository.Store
-	allowPrivateTargets bool
-	client              *http.Client
+// Options configures the notification service. Zero values get sensible
+// production defaults via NewService.
+type Options struct {
+	AllowPrivateTargets bool
+	// SigningSecret, if non-empty, HMAC-SHA256 signs each request body and
+	// adds X-UpTime-Signature so receivers can verify authenticity.
+	SigningSecret string
+	// PerAttemptTimeout caps each individual webhook POST.
+	PerAttemptTimeout time.Duration
+	// MaxRetries is the number of *additional* attempts after the first
+	// failure. Zero disables retries.
+	MaxRetries int
+	UserAgent  string
 }
 
-func NewService(store repository.Store, allowPrivateTargets bool) *Service {
+func (o Options) withDefaults() Options {
+	if o.PerAttemptTimeout <= 0 {
+		o.PerAttemptTimeout = 10 * time.Second
+	}
+	if o.MaxRetries < 0 {
+		o.MaxRetries = 0
+	}
+	if o.UserAgent == "" {
+		o.UserAgent = "UpTime-Notifier/1.0"
+	}
+	return o
+}
+
+type Service struct {
+	store  repository.Store
+	opts   Options
+	client *http.Client
+}
+
+func NewService(store repository.Store, opts Options) *Service {
+	opts = opts.withDefaults()
 	return &Service{
-		store:               store,
-		allowPrivateTargets: allowPrivateTargets,
-		client:              &http.Client{Timeout: 5 * time.Second},
+		store:  store,
+		opts:   opts,
+		client: &http.Client{Timeout: opts.PerAttemptTimeout},
 	}
 }
 
+// IncidentEvent is the JSON shape posted to webhook URLs. Fields are
+// stable; new fields may be added but existing ones won't change meaning.
 type IncidentEvent struct {
 	Event       string    `json:"event"`
+	IncidentID  string    `json:"incidentId"`
 	MonitorID   string    `json:"monitorId"`
 	MonitorName string    `json:"monitorName"`
 	Status      string    `json:"status,omitempty"`
@@ -38,8 +81,9 @@ type IncidentEvent struct {
 }
 
 func (s *Service) SendIncidentOpened(ctx context.Context, monitor models.Monitor, incident models.Incident) {
-	s.send(ctx, incident.ID, IncidentEvent{
+	s.send(ctx, IncidentEvent{
 		Event:       "incident.opened",
+		IncidentID:  incident.ID,
 		MonitorID:   monitor.ID,
 		MonitorName: monitor.Name,
 		Status:      string(models.StatusDown),
@@ -53,47 +97,140 @@ func (s *Service) SendIncidentResolved(ctx context.Context, monitor models.Monit
 	if incident.ResolvedAt != nil {
 		resolvedAt = *incident.ResolvedAt
 	}
-	s.send(ctx, incident.ID, IncidentEvent{
+	s.send(ctx, IncidentEvent{
 		Event:       "incident.resolved",
+		IncidentID:  incident.ID,
 		MonitorID:   monitor.ID,
 		MonitorName: monitor.Name,
 		ResolvedAt:  resolvedAt,
 	})
 }
 
-func (s *Service) send(ctx context.Context, incidentID string, event IncidentEvent) {
+func (s *Service) send(ctx context.Context, event IncidentEvent) {
 	channels, err := s.store.ListNotificationChannels(ctx)
+	if err != nil {
+		// We've already returned to the caller (this is goroutined off);
+		// best we can do is record the failure for ops.
+		return
+	}
+	payload, err := json.Marshal(event)
 	if err != nil {
 		return
 	}
-	payload, _ := json.Marshal(event)
+
+	// Fan out across channels concurrently. Sequential delivery would let a
+	// single slow webhook stall every other receiver.
+	var wg sync.WaitGroup
 	for _, channel := range channels {
 		if !channel.Enabled || channel.Type != "webhook" {
 			continue
 		}
-		statusCode, errText := 0, ""
-		success := false
-		if _, err := checks.ValidateURL(channel.URL, s.allowPrivateTargets); err != nil {
-			errText = err.Error()
-		} else {
-			req, err := http.NewRequestWithContext(ctx, http.MethodPost, channel.URL, bytes.NewReader(payload))
-			if err != nil {
-				errText = err.Error()
-			} else {
-				req.Header.Set("Content-Type", "application/json")
-				resp, err := s.client.Do(req)
-				if err != nil {
-					errText = err.Error()
-				} else {
-					statusCode = resp.StatusCode
-					_ = resp.Body.Close()
-					success = statusCode >= 200 && statusCode < 300
-					if !success {
-						errText = fmt.Sprintf("webhook returned status %d", statusCode)
-					}
-				}
-			}
-		}
-		_ = s.store.LogNotificationEvent(ctx, channel.ID, incidentID, event.Event, success, statusCode, errText)
+		ch := channel
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			s.deliver(ctx, ch, event, payload)
+		}()
 	}
+	wg.Wait()
+}
+
+// deliver attempts to POST the payload to channel.URL up to 1+MaxRetries
+// times with exponential backoff plus jitter. Every attempt is logged in
+// notification_events so operators have an audit trail.
+func (s *Service) deliver(ctx context.Context, channel models.NotificationChannel, event IncidentEvent, payload []byte) {
+	if _, err := checks.ValidateURL(channel.URL, s.opts.AllowPrivateTargets); err != nil {
+		_ = s.store.LogNotificationEvent(ctx, channel.ID, event.IncidentID, event.Event, false, 0, fmt.Sprintf("blocked: %v", err))
+		return
+	}
+
+	signature := s.sign(payload)
+	deadline := time.Duration(s.opts.MaxRetries+1) * s.opts.PerAttemptTimeout
+	if deadline <= 0 {
+		deadline = s.opts.PerAttemptTimeout
+	}
+	overallCtx, cancel := context.WithTimeout(ctx, deadline*2)
+	defer cancel()
+
+	var lastStatus int
+	var lastErrText string
+	for attempt := 0; attempt <= s.opts.MaxRetries; attempt++ {
+		if overallCtx.Err() != nil {
+			lastErrText = "delivery context cancelled"
+			break
+		}
+		status, errText, retryable := s.postOnce(overallCtx, channel.URL, payload, signature, event.Event, attempt)
+		lastStatus, lastErrText = status, errText
+		if errText == "" && status >= 200 && status < 300 {
+			_ = s.store.LogNotificationEvent(ctx, channel.ID, event.IncidentID, event.Event, true, status, "")
+			return
+		}
+		if !retryable || attempt == s.opts.MaxRetries {
+			break
+		}
+		// Exponential backoff with jitter: 250ms, 500ms, 1s, ... capped.
+		backoff := time.Duration(250) * time.Millisecond * (1 << attempt)
+		if backoff > 10*time.Second {
+			backoff = 10 * time.Second
+		}
+		backoff += time.Duration(mathrand.Int64N(int64(backoff / 2)))
+		select {
+		case <-time.After(backoff):
+		case <-overallCtx.Done():
+			lastErrText = "delivery context cancelled"
+			break
+		}
+	}
+	_ = s.store.LogNotificationEvent(ctx, channel.ID, event.IncidentID, event.Event, false, lastStatus, lastErrText)
+}
+
+// postOnce performs a single HTTP attempt. retryable is true for transport
+// errors and 5xx/429 responses; 4xx responses are treated as terminal.
+func (s *Service) postOnce(ctx context.Context, url string, payload []byte, signature, eventType string, attempt int) (status int, errText string, retryable bool) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(payload))
+	if err != nil {
+		return 0, fmt.Sprintf("build request: %v", err), false
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("User-Agent", s.opts.UserAgent)
+	req.Header.Set("X-UpTime-Event", eventType)
+	req.Header.Set("X-UpTime-Delivery-Attempt", strconv.Itoa(attempt+1))
+	if signature != "" {
+		req.Header.Set("X-UpTime-Signature", "sha256="+signature)
+	}
+
+	resp, err := s.client.Do(req)
+	if err != nil {
+		switch {
+		case errors.Is(err, context.DeadlineExceeded):
+			return 0, "request timed out", true
+		case errors.Is(err, context.Canceled):
+			return 0, "request cancelled", false
+		}
+		return 0, err.Error(), true
+	}
+	defer resp.Body.Close()
+	// Drain (and discard) the body so the connection can be reused. We cap
+	// reads at 64 KiB to avoid pathological receivers.
+	_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 64<<10))
+
+	switch {
+	case resp.StatusCode >= 200 && resp.StatusCode < 300:
+		return resp.StatusCode, "", false
+	case resp.StatusCode == http.StatusTooManyRequests, resp.StatusCode >= 500:
+		return resp.StatusCode, fmt.Sprintf("webhook returned status %d", resp.StatusCode), true
+	default:
+		return resp.StatusCode, fmt.Sprintf("webhook returned status %d", resp.StatusCode), false
+	}
+}
+
+// sign returns the HMAC-SHA256 of payload as a hex string, or "" if no
+// signing secret is configured.
+func (s *Service) sign(payload []byte) string {
+	if s.opts.SigningSecret == "" {
+		return ""
+	}
+	mac := hmac.New(sha256.New, []byte(s.opts.SigningSecret))
+	mac.Write(payload)
+	return hex.EncodeToString(mac.Sum(nil))
 }
