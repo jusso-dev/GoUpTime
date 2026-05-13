@@ -110,3 +110,29 @@ type ResultFilter struct {
 	Limit         int
 	Offset        int
 }
+
+// WorkerHeartbeat is the periodic liveness + state snapshot a worker
+// process writes to the database so the API can surface a "what's running
+// right now" view without sharing memory across processes.
+//
+// InFlight is the set of monitor IDs currently being checked at the moment
+// the heartbeat was written; ordering is not stable. JobsCompleted and
+// JobsFailed are monotonic counters scoped to the worker's lifetime — they
+// reset when the process restarts.
+type WorkerHeartbeat struct {
+	InstanceID     string    `json:"instanceId"`
+	Hostname       string    `json:"hostname"`
+	Version        string    `json:"version"`
+	StartedAt      time.Time `json:"startedAt"`
+	LastSeenAt     time.Time `json:"lastSeenAt"`
+	WorkerCount    int       `json:"workerCount"`
+	ActiveJobs     int       `json:"activeJobs"`
+	QueueDepth     int       `json:"queueDepth"`
+	QueueCapacity  int       `json:"queueCapacity"`
+	JobsCompleted  int64     `json:"jobsCompleted"`
+	JobsFailed     int64     `json:"jobsFailed"`
+	InFlight       []string  `json:"inFlight"`
+	// Stale is set by the API when LastSeenAt is older than the freshness
+	// window. Workers never write to it.
+	Stale bool `json:"stale,omitempty"`
+}

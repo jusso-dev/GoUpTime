@@ -1,0 +1,280 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>UpTime · Workers</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<style>
+  :root {
+    --bg: #0f1115;
+    --panel: #161922;
+    --panel-2: #1d2230;
+    --border: #2a3041;
+    --text: #d8dee9;
+    --muted: #7b8597;
+    --accent: #5cc8ff;
+    --good: #6ee7b7;
+    --warn: #fbbf24;
+    --bad: #f87171;
+    --shadow: 0 1px 0 rgba(255,255,255,0.04), 0 6px 24px rgba(0,0,0,0.35);
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    font: 14px/1.45 ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+    background: var(--bg);
+    color: var(--text);
+  }
+  header {
+    padding: 16px 24px;
+    border-bottom: 1px solid var(--border);
+    background: var(--panel);
+    display: flex;
+    align-items: center;
+    gap: 16px;
+    position: sticky;
+    top: 0;
+    z-index: 10;
+  }
+  header h1 { font-size: 16px; margin: 0; font-weight: 600; letter-spacing: 0.04em; text-transform: uppercase; color: var(--muted); }
+  header .spacer { flex: 1; }
+  header .field { display: flex; gap: 6px; align-items: center; }
+  header label { color: var(--muted); font-size: 12px; }
+  header input[type=password], header input[type=text] {
+    background: var(--panel-2);
+    border: 1px solid var(--border);
+    color: var(--text);
+    border-radius: 6px;
+    padding: 6px 10px;
+    width: 280px;
+    font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+    font-size: 12px;
+  }
+  header button {
+    background: var(--accent);
+    color: #0a0d12;
+    border: none;
+    border-radius: 6px;
+    padding: 7px 14px;
+    cursor: pointer;
+    font-weight: 600;
+    font-size: 12px;
+  }
+  header button:hover { filter: brightness(1.1); }
+  main { padding: 24px; max-width: 1200px; margin: 0 auto; }
+  .grid { display: grid; gap: 16px; }
+  .grid.cards { grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); }
+  .card {
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 16px;
+    box-shadow: var(--shadow);
+  }
+  .card .label { color: var(--muted); font-size: 12px; text-transform: uppercase; letter-spacing: 0.06em; }
+  .card .value { font-size: 28px; font-weight: 600; margin-top: 6px; font-variant-numeric: tabular-nums; }
+  .card .sub { color: var(--muted); font-size: 12px; margin-top: 4px; }
+  section { margin-top: 24px; }
+  section h2 {
+    font-size: 13px;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    color: var(--muted);
+    margin: 0 0 12px;
+    font-weight: 600;
+  }
+  table { width: 100%; border-collapse: collapse; background: var(--panel); border-radius: 10px; overflow: hidden; box-shadow: var(--shadow); border: 1px solid var(--border); }
+  th, td { padding: 10px 14px; text-align: left; font-variant-numeric: tabular-nums; }
+  th { background: var(--panel-2); color: var(--muted); font-size: 11px; text-transform: uppercase; letter-spacing: 0.06em; font-weight: 600; }
+  tr + tr td { border-top: 1px solid var(--border); }
+  tr td.mono, th.mono, code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px; }
+  .pill { display: inline-block; padding: 2px 8px; border-radius: 999px; font-size: 11px; font-weight: 600; }
+  .pill.good { background: rgba(110,231,183,0.12); color: var(--good); }
+  .pill.bad  { background: rgba(248,113,113,0.14); color: var(--bad); }
+  .pill.warn { background: rgba(251,191,36,0.14); color: var(--warn); }
+  .pill.muted { background: rgba(123,133,151,0.18); color: var(--muted); }
+  .ids { display: flex; gap: 4px; flex-wrap: wrap; }
+  .ids code { background: var(--panel-2); padding: 2px 6px; border-radius: 4px; font-size: 11px; }
+  #status { font-size: 12px; color: var(--muted); }
+  #error { color: var(--bad); font-size: 12px; margin-left: 12px; }
+  .empty { color: var(--muted); padding: 14px; text-align: center; }
+</style>
+</head>
+<body>
+<header>
+  <h1>UpTime · Workers</h1>
+  <span id="status">disconnected</span>
+  <span id="error"></span>
+  <div class="spacer"></div>
+  <div class="field">
+    <label for="apikey">API key</label>
+    <input id="apikey" type="password" placeholder="upt_… or bootstrap key" autocomplete="off">
+    <button id="save">Save</button>
+  </div>
+</header>
+
+<main>
+  <div class="grid cards">
+    <div class="card"><div class="label">Healthy workers</div><div class="value" id="m-workers">—</div><div class="sub" id="m-workers-sub"></div></div>
+    <div class="card"><div class="label">Active jobs</div><div class="value" id="m-active">—</div><div class="sub">running right now</div></div>
+    <div class="card"><div class="label">Queue depth</div><div class="value" id="m-queue">—</div><div class="sub" id="m-queue-sub">across all workers</div></div>
+    <div class="card"><div class="label">Jobs completed</div><div class="value" id="m-completed">—</div><div class="sub" id="m-failed">— failed</div></div>
+  </div>
+
+  <section>
+    <h2>Workers</h2>
+    <table id="workers-table">
+      <thead><tr>
+        <th>Instance</th><th>Host</th><th>Started</th><th>Last seen</th>
+        <th>Active</th><th>Queue</th><th>Completed</th><th>Failed</th><th>In flight</th>
+      </tr></thead>
+      <tbody><tr><td colspan="9" class="empty">No workers yet — start the worker process.</td></tr></tbody>
+    </table>
+  </section>
+
+  <section>
+    <h2>Recent checks</h2>
+    <table id="checks-table">
+      <thead><tr>
+        <th>When</th><th>Monitor</th><th>Status</th><th>HTTP</th><th>Duration</th><th>Error</th>
+      </tr></thead>
+      <tbody><tr><td colspan="6" class="empty">No checks yet.</td></tr></tbody>
+    </table>
+  </section>
+</main>
+
+<script>
+(function () {
+  const $ = (id) => document.getElementById(id);
+  const apiKeyField = $("apikey");
+  const statusEl = $("status");
+  const errorEl = $("error");
+  const POLL_MS = 2000;
+
+  apiKeyField.value = localStorage.getItem("uptime_api_key") || "";
+  $("save").addEventListener("click", () => {
+    localStorage.setItem("uptime_api_key", apiKeyField.value.trim());
+    errorEl.textContent = "";
+    poll();
+  });
+
+  function fmtTime(iso) {
+    if (!iso) return "—";
+    const d = new Date(iso);
+    return d.toLocaleTimeString();
+  }
+  function fmtDuration(ms) {
+    if (ms == null) return "—";
+    if (ms < 1000) return ms + " ms";
+    return (ms / 1000).toFixed(2) + " s";
+  }
+  function fmtRelative(iso) {
+    if (!iso) return "—";
+    const seconds = Math.floor((Date.now() - new Date(iso).getTime()) / 1000);
+    if (seconds < 1) return "just now";
+    if (seconds < 60) return seconds + "s ago";
+    if (seconds < 3600) return Math.floor(seconds / 60) + "m ago";
+    return Math.floor(seconds / 3600) + "h ago";
+  }
+  function statusPill(status) {
+    const s = String(status || "").toLowerCase();
+    let cls = "muted";
+    if (s === "up") cls = "good";
+    else if (s === "down") cls = "bad";
+    else if (s === "degraded") cls = "warn";
+    return `<span class="pill ${cls}">${escapeHtml(s || "—")}</span>`;
+  }
+  function escapeHtml(s) {
+    return String(s).replace(/[&<>"']/g, (c) => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
+  }
+  function truncate(s, n) {
+    s = String(s || "");
+    return s.length > n ? s.slice(0, n - 1) + "…" : s;
+  }
+
+  async function poll() {
+    const key = apiKeyField.value.trim();
+    if (!key) {
+      statusEl.textContent = "enter API key to begin";
+      return;
+    }
+    try {
+      const res = await fetch("/api/v1/workers/status", {
+        headers: { "Authorization": "Bearer " + key }
+      });
+      if (res.status === 401) {
+        errorEl.textContent = "unauthorized — check API key";
+        statusEl.textContent = "disconnected";
+        return;
+      }
+      if (!res.ok) {
+        const body = await res.text();
+        errorEl.textContent = "HTTP " + res.status + ": " + truncate(body, 120);
+        statusEl.textContent = "error";
+        return;
+      }
+      const data = await res.json();
+      errorEl.textContent = "";
+      statusEl.textContent = "live · updated " + new Date(data.generatedAt).toLocaleTimeString();
+      render(data);
+    } catch (e) {
+      errorEl.textContent = String(e.message || e);
+      statusEl.textContent = "disconnected";
+    }
+  }
+
+  function render(data) {
+    const agg = data.aggregate || {};
+    $("m-workers").textContent = (agg.healthyWorkers ?? 0);
+    $("m-workers-sub").textContent = (agg.workerInstances || 0) + " total instances";
+    $("m-active").textContent = (agg.activeJobs ?? 0);
+    $("m-queue").textContent = (agg.queueDepth ?? 0);
+    $("m-queue-sub").textContent = "of " + (agg.queueCapacity ?? 0) + " capacity";
+    $("m-completed").textContent = (agg.jobsCompleted ?? 0);
+    $("m-failed").textContent = (agg.jobsFailed ?? 0) + " failed";
+
+    const wb = document.querySelector("#workers-table tbody");
+    if (!data.workers || data.workers.length === 0) {
+      wb.innerHTML = '<tr><td colspan="9" class="empty">No workers yet — start the worker process.</td></tr>';
+    } else {
+      wb.innerHTML = data.workers.map((w) => `
+        <tr>
+          <td class="mono">${escapeHtml(w.instanceId.slice(0, 8))}…
+            ${w.stale ? '<span class="pill bad">stale</span>' : '<span class="pill good">live</span>'}
+          </td>
+          <td>${escapeHtml(w.hostname || "—")}</td>
+          <td>${fmtRelative(w.startedAt)}</td>
+          <td>${fmtRelative(w.lastSeenAt)}</td>
+          <td>${w.activeJobs}/${w.workerCount}</td>
+          <td>${w.queueDepth}/${w.queueCapacity}</td>
+          <td>${w.jobsCompleted}</td>
+          <td>${w.jobsFailed}</td>
+          <td><div class="ids">${
+            (w.inFlight || []).slice(0, 8).map(id => `<code title="${escapeHtml(id)}">${escapeHtml(id.slice(0,8))}</code>`).join("")
+            || '<span class="pill muted">idle</span>'
+          }${(w.inFlight || []).length > 8 ? ' <span class="pill muted">+' + ((w.inFlight.length) - 8) + '</span>' : ''}</div></td>
+        </tr>`).join("");
+    }
+
+    const cb = document.querySelector("#checks-table tbody");
+    if (!data.recentChecks || data.recentChecks.length === 0) {
+      cb.innerHTML = '<tr><td colspan="6" class="empty">No checks yet.</td></tr>';
+    } else {
+      cb.innerHTML = data.recentChecks.map((r) => `
+        <tr>
+          <td>${fmtTime(r.checkedAt)}</td>
+          <td class="mono">${escapeHtml(r.monitorId.slice(0, 8))}…</td>
+          <td>${statusPill(r.status)}</td>
+          <td>${r.statusCode || "—"}</td>
+          <td>${fmtDuration(r.responseTimeMs)}</td>
+          <td class="mono">${escapeHtml(truncate(r.error, 80))}</td>
+        </tr>`).join("");
+    }
+  }
+
+  poll();
+  setInterval(poll, POLL_MS);
+})();
+</script>
+</body>
+</html>

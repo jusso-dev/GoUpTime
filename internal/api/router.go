@@ -19,6 +19,7 @@ import (
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"github.com/redis/go-redis/v9"
 
+	"github.com/jusso-dev/uptime/internal/api/web"
 	"github.com/jusso-dev/uptime/internal/apierr"
 	"github.com/jusso-dev/uptime/internal/auth"
 	"github.com/jusso-dev/uptime/internal/config"
@@ -58,6 +59,10 @@ func NewRouter(cfg config.Config, store repository.Store, redisClient *redis.Cli
 	r.GET("/health-check", s.health)
 	r.GET("/metrics", gin.WrapH(promhttp.Handler()))
 	r.POST("/ping-endpoint", s.pingEndpoint)
+	// Operator-facing dashboard. The HTML is unauthenticated; it prompts
+	// the user for an API key client-side and uses it for the protected
+	// /api/v1/workers/status XHR. This matches the rest of the API.
+	r.GET("/workers", s.workersDashboard)
 	r.NoRoute(s.notFound)
 	r.NoMethod(s.methodNotAllowed)
 
@@ -85,7 +90,16 @@ func NewRouter(cfg config.Config, store repository.Store, redisClient *redis.Cli
 	v1.POST("/api-keys", s.createAPIKey)
 	v1.GET("/api-keys", s.listAPIKeys)
 	v1.DELETE("/api-keys/:id", s.revokeAPIKey)
+	v1.GET("/workers/status", s.workersStatus)
 	return r
+}
+
+// workersDashboard serves the embedded static HTML page. The asset is
+// versioned with the binary and cached briefly so a fast reload doesn't
+// re-fetch it from the server.
+func (s *Server) workersDashboard(c *gin.Context) {
+	c.Header("Cache-Control", "public, max-age=30")
+	c.Data(http.StatusOK, "text/html; charset=utf-8", web.WorkersHTML)
 }
 
 func (s *Server) health(c *gin.Context) {

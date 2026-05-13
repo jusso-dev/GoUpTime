@@ -10,9 +10,13 @@ import (
 	"fmt"
 	"log/slog"
 	mathrand "math/rand/v2"
+	"os"
 	"runtime/debug"
 	"sync"
+	"sync/atomic"
 	"time"
+
+	"github.com/google/uuid"
 
 	"github.com/jusso-dev/uptime/internal/config"
 	"github.com/jusso-dev/uptime/internal/metrics"
@@ -20,6 +24,11 @@ import (
 	"github.com/jusso-dev/uptime/internal/repository"
 	"github.com/jusso-dev/uptime/internal/service"
 )
+
+// heartbeatInterval is how often the worker writes its state row to the
+// database. Short enough that the UI feels live; long enough that the
+// write cost is negligible.
+const heartbeatInterval = 5 * time.Second
 
 type Worker struct {
 	cfg     config.Config
@@ -30,11 +39,20 @@ type Worker struct {
 	jobs    chan models.Monitor
 	// inFlight tracks monitor IDs currently being processed. sync.Map fits
 	// the read-mostly access pattern (one writer per monitor, many readers
-	// in enqueueDue).
+	// in enqueueDue and snapshotInFlight).
 	inFlight sync.Map
 	// nextRun is only mutated from the single Run goroutine, so no
 	// synchronization is needed.
 	nextRun map[string]time.Time
+
+	// Lifetime state surfaced via heartbeats. Atomic because the consume
+	// goroutines update them while the heartbeat loop reads.
+	instanceID     string
+	hostname       string
+	startedAt      time.Time
+	activeJobs     atomic.Int32
+	jobsCompleted  atomic.Int64
+	jobsFailed     atomic.Int64
 }
 
 func New(cfg config.Config, store repository.Store, monitor *service.MonitoringService, m *metrics.Metrics, logger *slog.Logger) *Worker {
@@ -42,16 +60,28 @@ func New(cfg config.Config, store repository.Store, monitor *service.MonitoringS
 	if bufferSize < 4 {
 		bufferSize = 4
 	}
+	hostname, err := os.Hostname()
+	if err != nil {
+		// Hostname is purely informational; fall back rather than fail.
+		hostname = "unknown"
+	}
 	return &Worker{
-		cfg:     cfg,
-		store:   store,
-		monitor: monitor,
-		metrics: m,
-		logger:  logger,
-		jobs:    make(chan models.Monitor, bufferSize),
-		nextRun: map[string]time.Time{},
+		cfg:        cfg,
+		store:      store,
+		monitor:    monitor,
+		metrics:    m,
+		logger:     logger,
+		jobs:       make(chan models.Monitor, bufferSize),
+		nextRun:    map[string]time.Time{},
+		instanceID: uuid.NewString(),
+		hostname:   hostname,
+		startedAt:  time.Now().UTC(),
 	}
 }
+
+// InstanceID returns the unique id assigned to this worker process at
+// construction. Exposed for tests and integration callers.
+func (w *Worker) InstanceID() string { return w.instanceID }
 
 // Run starts the worker pool and blocks until ctx is cancelled. It returns
 // ctx.Err() on shutdown so callers can distinguish a clean shutdown from a
@@ -67,6 +97,14 @@ func (w *Worker) Run(ctx context.Context) error {
 		}()
 	}
 
+	// Heartbeat goroutine: independent of the scheduler tick so a stalled
+	// store call in enqueueDue cannot starve liveness reporting.
+	heartbeatDone := make(chan struct{})
+	go func() {
+		defer close(heartbeatDone)
+		w.runHeartbeats(ctx)
+	}()
+
 	tick := w.cfg.SchedulerTick()
 	if tick <= 0 {
 		tick = 5 * time.Second
@@ -77,19 +115,83 @@ func (w *Worker) Run(ctx context.Context) error {
 	// Initial enqueue without waiting a full tick — better cold start
 	// behaviour, especially for low-frequency checks.
 	w.enqueueDue(ctx)
-	w.logger.Info("worker started", "workers", w.cfg.CheckWorkerCount, "tick", tick.String())
+	w.logger.Info("worker started",
+		"instance_id", w.instanceID,
+		"workers", w.cfg.CheckWorkerCount,
+		"tick", tick.String())
 
 	for {
 		select {
 		case <-ctx.Done():
 			close(w.jobs)
 			wg.Wait()
+			<-heartbeatDone
+			// Best-effort cleanup so the UI doesn't show us as alive
+			// after a clean shutdown. Use a fresh context since ctx is
+			// already cancelled.
+			cleanupCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+			if err := w.store.DeleteWorkerHeartbeat(cleanupCtx, w.instanceID); err != nil {
+				w.logger.Warn("heartbeat cleanup failed", "error", err)
+			}
+			cancel()
 			w.logger.Info("worker stopped", "reason", ctx.Err())
 			return ctx.Err()
 		case <-ticker.C:
 			w.enqueueDue(ctx)
 		}
 	}
+}
+
+// runHeartbeats writes the worker's state to the store every
+// heartbeatInterval until ctx is cancelled. The first write happens
+// immediately so the UI lights up without waiting a full interval.
+func (w *Worker) runHeartbeats(ctx context.Context) {
+	if err := w.writeHeartbeat(ctx); err != nil {
+		w.logger.Warn("initial heartbeat failed", "error", err)
+	}
+	ticker := time.NewTicker(heartbeatInterval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			if err := w.writeHeartbeat(ctx); err != nil {
+				w.logger.Warn("heartbeat write failed", "error", err)
+			}
+		}
+	}
+}
+
+func (w *Worker) writeHeartbeat(ctx context.Context) error {
+	hb := models.WorkerHeartbeat{
+		InstanceID:    w.instanceID,
+		Hostname:      w.hostname,
+		Version:       w.cfg.Version,
+		StartedAt:     w.startedAt,
+		LastSeenAt:    time.Now().UTC(),
+		WorkerCount:   w.cfg.CheckWorkerCount,
+		ActiveJobs:    int(w.activeJobs.Load()),
+		QueueDepth:    len(w.jobs),
+		QueueCapacity: cap(w.jobs),
+		JobsCompleted: w.jobsCompleted.Load(),
+		JobsFailed:    w.jobsFailed.Load(),
+		InFlight:      w.snapshotInFlight(),
+	}
+	return w.store.UpsertWorkerHeartbeat(ctx, hb)
+}
+
+// snapshotInFlight returns the current in-flight monitor IDs. Iteration
+// over sync.Map is concurrent-safe; ordering is unspecified.
+func (w *Worker) snapshotInFlight() []string {
+	ids := []string{}
+	w.inFlight.Range(func(key, _ any) bool {
+		if id, ok := key.(string); ok {
+			ids = append(ids, id)
+		}
+		return true
+	})
+	return ids
 }
 
 // enqueueDue scans enabled monitors and submits any whose next-run time has
@@ -152,11 +254,16 @@ func (w *Worker) runOne(ctx context.Context, workerID int, monitor models.Monito
 	w.inFlight.Store(monitor.ID, struct{}{})
 	defer w.inFlight.Delete(monitor.ID)
 	w.metrics.WorkerActive.Inc()
-	defer w.metrics.WorkerActive.Dec()
+	w.activeJobs.Add(1)
+	defer func() {
+		w.metrics.WorkerActive.Dec()
+		w.activeJobs.Add(-1)
+	}()
 
 	defer func() {
 		if r := recover(); r != nil {
 			w.metrics.WorkerFailed.Inc()
+			w.jobsFailed.Add(1)
 			w.logger.Error("check panic recovered",
 				"worker_id", workerID,
 				"monitor_id", monitor.ID,
@@ -169,8 +276,10 @@ func (w *Worker) runOne(ctx context.Context, workerID int, monitor models.Monito
 	start := time.Now()
 	result, err := w.monitor.RunCheck(ctx, monitor)
 	w.metrics.WorkerCompleted.Inc()
+	w.jobsCompleted.Add(1)
 	if err != nil || !result.Success {
 		w.metrics.WorkerFailed.Inc()
+		w.jobsFailed.Add(1)
 	}
 
 	level := slog.LevelInfo

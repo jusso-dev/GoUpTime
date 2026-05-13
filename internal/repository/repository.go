@@ -2,6 +2,7 @@ package repository
 
 import (
 	"context"
+	"time"
 
 	"github.com/jusso-dev/uptime/internal/models"
 )
@@ -44,4 +45,8 @@ type Store interface {
 	RevokeAPIKey(ctx context.Context, id string) error
 
 	OverviewStats(ctx context.Context) (models.OverviewStats, error)
+
+	UpsertWorkerHeartbeat(ctx context.Context, hb models.WorkerHeartbeat) error
+	ListWorkerHeartbeats(ctx context.Context, since time.Time) ([]models.WorkerHeartbeat, error)
+	DeleteWorkerHeartbeat(ctx context.Context, instanceID string) error
 }

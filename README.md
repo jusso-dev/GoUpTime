@@ -183,6 +183,18 @@ Checks are stored in `check_results`. A monitor opens an incident only after `fa
 
 Prometheus scrapes both services, and Grafana is provisioned with a starter UpTime dashboard.
 
+### Worker dashboard
+
+A minimal job UI is served by the API at `GET /workers`. It polls
+`GET /api/v1/workers/status` every 2 seconds and shows, per worker instance:
+host, started/last-seen, active and queued jobs, in-flight monitor IDs, and
+the most recent 50 check results. Workers write their state into
+`worker_heartbeats` every 5 seconds, so the same view also reflects crashed
+or restarting instances (rows older than ~20 seconds are flagged `stale`).
+
+The HTML page is unauthenticated; it prompts for an API key client-side
+and uses it as a Bearer token for the protected status XHR.
+
 ## Security
 
 - `/api/v1/*` endpoints require `Authorization: Bearer <key>` or `X-API-Key`

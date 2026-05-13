@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"time"
 
 	"github.com/jusso-dev/uptime/internal/models"
 )
@@ -66,3 +67,8 @@ func (StoreNoop) RevokeAPIKey(context.Context, string) error                    
 func (StoreNoop) OverviewStats(context.Context) (models.OverviewStats, error) {
 	return models.OverviewStats{}, nil
 }
+func (StoreNoop) UpsertWorkerHeartbeat(context.Context, models.WorkerHeartbeat) error { return nil }
+func (StoreNoop) ListWorkerHeartbeats(context.Context, time.Time) ([]models.WorkerHeartbeat, error) {
+	return nil, nil
+}
+func (StoreNoop) DeleteWorkerHeartbeat(context.Context, string) error { return nil }

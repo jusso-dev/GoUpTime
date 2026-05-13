@@ -104,6 +104,13 @@ func (r *recordingStore) RevokeAPIKey(context.Context, string) error { return ni
 func (r *recordingStore) OverviewStats(context.Context) (models.OverviewStats, error) {
 	return models.OverviewStats{}, nil
 }
+func (r *recordingStore) UpsertWorkerHeartbeat(context.Context, models.WorkerHeartbeat) error {
+	return nil
+}
+func (r *recordingStore) ListWorkerHeartbeats(context.Context, time.Time) ([]models.WorkerHeartbeat, error) {
+	return nil, nil
+}
+func (r *recordingStore) DeleteWorkerHeartbeat(context.Context, string) error { return nil }
 
 func TestDeliverSignsAndRecordsSuccess(t *testing.T) {
 	secret := "shhh-this-is-secret"
