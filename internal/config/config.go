@@ -1,17 +1,23 @@
 package config
 
 import (
+	"errors"
 	"fmt"
 	"log/slog"
+	"net/url"
 	"os"
 	"strconv"
 	"strings"
 	"time"
 )
 
+// Config holds all runtime configuration. Values are loaded from environment
+// variables exactly once at startup via Load; the resulting Config should be
+// treated as immutable.
 type Config struct {
 	AppEnv                     string
 	AppPort                    string
+	MetricsPort                string
 	Version                    string
 	DatabaseURL                string
 	RedisURL                   string
@@ -22,48 +28,205 @@ type Config struct {
 	LogLevel                   slog.Level
 	HTTPUserAgent              string
 	TLSExpiryWarnDays          int
+	WebhookSigningSecret       string
+	WebhookTimeoutSeconds      int
+	WebhookMaxRetries          int
+	ShutdownTimeoutSeconds     int
+	APIReadHeaderTimeoutSec    int
+	APIWriteTimeoutSec         int
+	MaxRequestBodyBytes        int64
+	SchedulerTickSeconds       int
 }
 
-func Load() (Config, error) {
-	level := slog.LevelInfo
-	switch strings.ToLower(getenv("LOG_LEVEL", "info")) {
-	case "debug":
-		level = slog.LevelDebug
-	case "warn":
-		level = slog.LevelWarn
-	case "error":
-		level = slog.LevelError
+// IsProduction returns true when APP_ENV indicates a non-development
+// deployment. Used to enforce stricter defaults (no bootstrap key fallback,
+// no plaintext credentials, etc.).
+func (c Config) IsProduction() bool {
+	switch strings.ToLower(c.AppEnv) {
+	case "production", "prod":
+		return true
 	}
+	return false
+}
 
+// Load reads configuration from the environment and returns a fully validated
+// Config. Errors describe the offending variable and the constraint that
+// failed so operators can fix misconfiguration without reading source.
+func Load() (Config, error) {
 	cfg := Config{
 		AppEnv:                     getenv("APP_ENV", "development"),
 		AppPort:                    getenv("APP_PORT", "8008"),
+		MetricsPort:                getenv("METRICS_PORT", "8009"),
 		Version:                    getenv("APP_VERSION", "dev"),
 		DatabaseURL:                getenv("DATABASE_URL", "postgres://uptime:uptime@localhost:5432/uptime?sslmode=disable"),
 		RedisURL:                   getenv("REDIS_URL", "redis://localhost:6379/0"),
-		BootstrapAPIKey:            getenv("UPTIME_BOOTSTRAP_API_KEY", "dev_admin_key"),
-		AllowPrivateTargets:        getenvBool("ALLOW_PRIVATE_TARGETS", false),
-		CheckWorkerCount:           getenvInt("CHECK_WORKER_COUNT", 10),
-		DefaultCheckTimeoutSeconds: getenvInt("DEFAULT_CHECK_TIMEOUT_SECONDS", 10),
-		LogLevel:                   level,
+		BootstrapAPIKey:            getenv("UPTIME_BOOTSTRAP_API_KEY", ""),
 		HTTPUserAgent:              getenv("HTTP_USER_AGENT", "UpTime-Monitor/1.0"),
-		TLSExpiryWarnDays:          getenvInt("TLS_EXPIRY_WARN_DAYS", 14),
+		WebhookSigningSecret:       getenv("WEBHOOK_SIGNING_SECRET", ""),
 	}
-	if cfg.CheckWorkerCount < 1 {
-		return Config{}, fmt.Errorf("CHECK_WORKER_COUNT must be greater than zero")
+
+	level, err := parseLogLevel(getenv("LOG_LEVEL", "info"))
+	if err != nil {
+		return Config{}, err
 	}
-	if cfg.DefaultCheckTimeoutSeconds < 1 {
-		return Config{}, fmt.Errorf("DEFAULT_CHECK_TIMEOUT_SECONDS must be greater than zero")
+	cfg.LogLevel = level
+
+	cfg.AllowPrivateTargets, err = getenvBool("ALLOW_PRIVATE_TARGETS", false)
+	if err != nil {
+		return Config{}, err
 	}
+
+	intVars := []struct {
+		key      string
+		fallback int
+		min      int
+		max      int
+		dst      *int
+	}{
+		{"CHECK_WORKER_COUNT", 10, 1, 1024, &cfg.CheckWorkerCount},
+		{"DEFAULT_CHECK_TIMEOUT_SECONDS", 10, 1, 300, &cfg.DefaultCheckTimeoutSeconds},
+		{"TLS_EXPIRY_WARN_DAYS", 14, 1, 365, &cfg.TLSExpiryWarnDays},
+		{"WEBHOOK_TIMEOUT_SECONDS", 10, 1, 60, &cfg.WebhookTimeoutSeconds},
+		{"WEBHOOK_MAX_RETRIES", 3, 0, 10, &cfg.WebhookMaxRetries},
+		{"SHUTDOWN_TIMEOUT_SECONDS", 15, 1, 120, &cfg.ShutdownTimeoutSeconds},
+		{"API_READ_HEADER_TIMEOUT_SECONDS", 5, 1, 60, &cfg.APIReadHeaderTimeoutSec},
+		{"API_WRITE_TIMEOUT_SECONDS", 30, 1, 600, &cfg.APIWriteTimeoutSec},
+		{"SCHEDULER_TICK_SECONDS", 5, 1, 60, &cfg.SchedulerTickSeconds},
+	}
+	for _, v := range intVars {
+		value, err := getenvInt(v.key, v.fallback)
+		if err != nil {
+			return Config{}, err
+		}
+		if value < v.min || value > v.max {
+			return Config{}, fmt.Errorf("%s=%d is out of range [%d, %d]", v.key, value, v.min, v.max)
+		}
+		*v.dst = value
+	}
+
+	bodyBytes, err := getenvInt64("MAX_REQUEST_BODY_BYTES", 1<<20) // 1 MiB
+	if err != nil {
+		return Config{}, err
+	}
+	if bodyBytes < 1024 {
+		return Config{}, fmt.Errorf("MAX_REQUEST_BODY_BYTES=%d must be >= 1024", bodyBytes)
+	}
+	cfg.MaxRequestBodyBytes = bodyBytes
+
+	if err := validatePort(cfg.AppPort, "APP_PORT"); err != nil {
+		return Config{}, err
+	}
+	if err := validatePort(cfg.MetricsPort, "METRICS_PORT"); err != nil {
+		return Config{}, err
+	}
+	if cfg.AppPort == cfg.MetricsPort {
+		return Config{}, fmt.Errorf("APP_PORT and METRICS_PORT must differ (both are %q)", cfg.AppPort)
+	}
+	if err := validateDatabaseURL(cfg.DatabaseURL); err != nil {
+		return Config{}, err
+	}
+	if err := validateRedisURL(cfg.RedisURL); err != nil {
+		return Config{}, err
+	}
+
+	if cfg.BootstrapAPIKey == "" {
+		if cfg.IsProduction() {
+			return Config{}, errors.New("UPTIME_BOOTSTRAP_API_KEY must be set in production")
+		}
+		cfg.BootstrapAPIKey = "dev_admin_key"
+	} else if len(cfg.BootstrapAPIKey) < 16 {
+		return Config{}, errors.New("UPTIME_BOOTSTRAP_API_KEY must be at least 16 characters")
+	}
+	if cfg.IsProduction() && cfg.AllowPrivateTargets {
+		return Config{}, errors.New("ALLOW_PRIVATE_TARGETS=true is not permitted in production")
+	}
+
 	return cfg, nil
 }
 
-func (c Config) Addr() string {
-	return ":" + c.AppPort
-}
+// Addr returns the listen address for the API server.
+func (c Config) Addr() string { return ":" + c.AppPort }
 
+// MetricsAddr returns the listen address for the worker metrics server.
+func (c Config) MetricsAddr() string { return ":" + c.MetricsPort }
+
+// DefaultTimeout returns the default per-check timeout as a Duration.
 func (c Config) DefaultTimeout() time.Duration {
 	return time.Duration(c.DefaultCheckTimeoutSeconds) * time.Second
+}
+
+// ShutdownTimeout returns the maximum duration to wait for in-flight requests
+// to complete during graceful shutdown.
+func (c Config) ShutdownTimeout() time.Duration {
+	return time.Duration(c.ShutdownTimeoutSeconds) * time.Second
+}
+
+// SchedulerTick returns the scheduler poll interval as a Duration.
+func (c Config) SchedulerTick() time.Duration {
+	return time.Duration(c.SchedulerTickSeconds) * time.Second
+}
+
+// WebhookTimeout returns the per-attempt webhook HTTP timeout.
+func (c Config) WebhookTimeout() time.Duration {
+	return time.Duration(c.WebhookTimeoutSeconds) * time.Second
+}
+
+func parseLogLevel(value string) (slog.Level, error) {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "debug":
+		return slog.LevelDebug, nil
+	case "info", "":
+		return slog.LevelInfo, nil
+	case "warn", "warning":
+		return slog.LevelWarn, nil
+	case "error":
+		return slog.LevelError, nil
+	default:
+		return slog.LevelInfo, fmt.Errorf("LOG_LEVEL=%q: must be one of debug, info, warn, error", value)
+	}
+}
+
+func validatePort(value, key string) error {
+	port, err := strconv.Atoi(value)
+	if err != nil {
+		return fmt.Errorf("%s=%q is not a valid port: %w", key, value, err)
+	}
+	if port < 1 || port > 65535 {
+		return fmt.Errorf("%s=%d must be between 1 and 65535", key, port)
+	}
+	return nil
+}
+
+func validateDatabaseURL(raw string) error {
+	u, err := url.Parse(raw)
+	if err != nil {
+		return fmt.Errorf("DATABASE_URL is not a valid URL: %w", err)
+	}
+	switch u.Scheme {
+	case "postgres", "postgresql":
+	default:
+		return fmt.Errorf("DATABASE_URL scheme %q must be postgres or postgresql", u.Scheme)
+	}
+	if u.Host == "" {
+		return errors.New("DATABASE_URL host is required")
+	}
+	return nil
+}
+
+func validateRedisURL(raw string) error {
+	u, err := url.Parse(raw)
+	if err != nil {
+		return fmt.Errorf("REDIS_URL is not a valid URL: %w", err)
+	}
+	switch u.Scheme {
+	case "redis", "rediss":
+	default:
+		return fmt.Errorf("REDIS_URL scheme %q must be redis or rediss", u.Scheme)
+	}
+	if u.Host == "" {
+		return errors.New("REDIS_URL host is required")
+	}
+	return nil
 }
 
 func getenv(key, fallback string) string {
@@ -73,26 +236,38 @@ func getenv(key, fallback string) string {
 	return fallback
 }
 
-func getenvBool(key string, fallback bool) bool {
+func getenvBool(key string, fallback bool) (bool, error) {
 	value := strings.TrimSpace(os.Getenv(key))
 	if value == "" {
-		return fallback
+		return fallback, nil
 	}
 	parsed, err := strconv.ParseBool(value)
 	if err != nil {
-		return fallback
+		return fallback, fmt.Errorf("%s=%q is not a valid boolean: %w", key, value, err)
 	}
-	return parsed
+	return parsed, nil
 }
 
-func getenvInt(key string, fallback int) int {
+func getenvInt(key string, fallback int) (int, error) {
 	value := strings.TrimSpace(os.Getenv(key))
 	if value == "" {
-		return fallback
+		return fallback, nil
 	}
 	parsed, err := strconv.Atoi(value)
 	if err != nil {
-		return fallback
+		return fallback, fmt.Errorf("%s=%q is not a valid integer: %w", key, value, err)
 	}
-	return parsed
+	return parsed, nil
+}
+
+func getenvInt64(key string, fallback int64) (int64, error) {
+	value := strings.TrimSpace(os.Getenv(key))
+	if value == "" {
+		return fallback, nil
+	}
+	parsed, err := strconv.ParseInt(value, 10, 64)
+	if err != nil {
+		return fallback, fmt.Errorf("%s=%q is not a valid integer: %w", key, value, err)
+	}
+	return parsed, nil
 }

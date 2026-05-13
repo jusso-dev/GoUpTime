@@ -1,8 +1,16 @@
+// Command uptime-api runs the public HTTP API.
+//
+// Exit codes:
+//
+//	0 — clean shutdown after SIGINT/SIGTERM
+//	1 — startup failure (config, db, redis)
+//	2 — runtime failure (listener died unexpectedly)
 package main
 
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"os"
@@ -22,24 +30,48 @@ import (
 )
 
 func main() {
-	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
-	defer stop()
+	if code := run(); code != 0 {
+		os.Exit(code)
+	}
+}
+
+func run() int {
+	// Bootstrap logger; replaced once config tells us the desired level.
+	bootLogger := slog.New(slog.NewJSONHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelInfo}))
 
 	cfg, err := config.Load()
 	if err != nil {
-		panic(err)
+		bootLogger.Error("config load failed", "error", err)
+		return 1
 	}
-	logger := slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{Level: cfg.LogLevel}))
+	logger := slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{Level: cfg.LogLevel})).
+		With("component", "api", "env", cfg.AppEnv, "version", cfg.Version)
 
-	pool, err := repository.Open(ctx, cfg.DatabaseURL)
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+
+	pool, err := repository.Open(ctx, cfg.DatabaseURL, repository.DefaultPoolConfig())
 	if err != nil {
 		logger.Error("database open failed", "error", err)
-		os.Exit(1)
+		return 1
 	}
 	defer pool.Close()
 	store := repository.NewPostgresStore(pool)
-	redisClient := redis.NewClient(&redis.Options{Addr: redisAddr(cfg.RedisURL)})
+
+	redisOpts, err := redis.ParseURL(cfg.RedisURL)
+	if err != nil {
+		logger.Error("redis url invalid", "error", err)
+		return 1
+	}
+	redisClient := redis.NewClient(redisOpts)
 	defer redisClient.Close()
+	pingCtx, pingCancel := context.WithTimeout(ctx, 5*time.Second)
+	if err := redisClient.Ping(pingCtx).Err(); err != nil {
+		// Redis is optional for the API surface; log a warning and continue
+		// so a transient outage doesn't take the API down.
+		logger.Warn("redis ping failed; continuing without redis health", "error", err)
+	}
+	pingCancel()
 
 	m := metrics.New()
 	registry := checks.NewRegistry(checks.Options{
@@ -48,28 +80,57 @@ func main() {
 		UserAgent:           cfg.HTTPUserAgent,
 		TLSExpiryWarnDays:   cfg.TLSExpiryWarnDays,
 	})
-	notifier := notifications.NewService(store, cfg.AllowPrivateTargets)
+	notifier := notifications.NewService(store, notifications.Options{
+		AllowPrivateTargets: cfg.AllowPrivateTargets,
+		SigningSecret:       cfg.WebhookSigningSecret,
+		PerAttemptTimeout:   cfg.WebhookTimeout(),
+		MaxRetries:          cfg.WebhookMaxRetries,
+		UserAgent:           cfg.HTTPUserAgent,
+	})
 	monitorSvc := service.NewMonitoringService(store, registry, notifier, m, true)
 	router := api.NewRouter(cfg, store, redisClient, monitorSvc, m, logger)
 
-	server := &http.Server{Addr: cfg.Addr(), Handler: router, ReadHeaderTimeout: 5 * time.Second}
+	server := &http.Server{
+		Addr:              cfg.Addr(),
+		Handler:           router,
+		ReadHeaderTimeout: time.Duration(cfg.APIReadHeaderTimeoutSec) * time.Second,
+		WriteTimeout:      time.Duration(cfg.APIWriteTimeoutSec) * time.Second,
+		IdleTimeout:       60 * time.Second,
+		MaxHeaderBytes:    1 << 20, // 1 MiB
+		ErrorLog:          slog.NewLogLogger(logger.Handler(), slog.LevelError),
+	}
+
+	serverErr := make(chan error, 1)
 	go func() {
 		logger.Info("api listening", "addr", cfg.Addr())
 		if err := server.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
-			logger.Error("api stopped", "error", err)
-			stop()
+			serverErr <- err
 		}
+		close(serverErr)
 	}()
-	<-ctx.Done()
-	shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-	_ = server.Shutdown(shutdownCtx)
-}
 
-func redisAddr(redisURL string) string {
-	opt, err := redis.ParseURL(redisURL)
-	if err != nil || opt.Addr == "" {
-		return "localhost:6379"
+	select {
+	case <-ctx.Done():
+		logger.Info("shutdown signal received")
+	case err, ok := <-serverErr:
+		if ok && err != nil {
+			logger.Error("api server crashed", "error", err)
+			return 2
+		}
 	}
-	return opt.Addr
+
+	shutdownCtx, cancel := context.WithTimeout(context.Background(), cfg.ShutdownTimeout())
+	defer cancel()
+	if err := server.Shutdown(shutdownCtx); err != nil {
+		logger.Error("graceful shutdown failed", "error", err)
+		// Force-close listeners; don't return 1 — we still received a
+		// shutdown signal.
+		_ = server.Close()
+	}
+	logger.Info("api stopped")
+	// Drain any pending error so we don't leak the goroutine.
+	if err, ok := <-serverErr; ok && err != nil {
+		fmt.Fprintln(os.Stderr, "post-shutdown error:", err)
+	}
+	return 0
 }

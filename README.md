@@ -87,15 +87,26 @@ go run ./cmd/worker
 
 | Variable | Default | Description |
 | --- | --- | --- |
-| `APP_ENV` | `development` | Runtime environment |
+| `APP_ENV` | `development` | Runtime environment (`production` enforces stricter defaults) |
 | `APP_PORT` | `8008` | API port |
-| `DATABASE_URL` | local Postgres | PostgreSQL connection string |
-| `REDIS_URL` | local Redis | Redis connection string |
-| `UPTIME_BOOTSTRAP_API_KEY` | `dev_admin_key` | Bootstrap bearer token |
-| `ALLOW_PRIVATE_TARGETS` | `false` | Allow localhost/private targets for checks/webhooks |
-| `CHECK_WORKER_COUNT` | `10` | Worker goroutine count |
-| `DEFAULT_CHECK_TIMEOUT_SECONDS` | `10` | Default check timeout |
+| `METRICS_PORT` | `8009` | Worker Prometheus metrics port |
+| `DATABASE_URL` | local Postgres | PostgreSQL connection string (`postgres://` or `postgresql://`) |
+| `REDIS_URL` | local Redis | Redis connection string (`redis://` or `rediss://`) |
+| `UPTIME_BOOTSTRAP_API_KEY` | `dev_admin_key` (dev only) | Bootstrap bearer token. Required in production; must be ≥ 16 chars |
+| `ALLOW_PRIVATE_TARGETS` | `false` | Allow localhost/private targets for checks/webhooks (forbidden in production) |
+| `CHECK_WORKER_COUNT` | `10` | Worker goroutine count (1–1024) |
+| `DEFAULT_CHECK_TIMEOUT_SECONDS` | `10` | Default check timeout (1–300) |
+| `SCHEDULER_TICK_SECONDS` | `5` | How often the scheduler polls for due monitors (1–60) |
 | `LOG_LEVEL` | `info` | `debug`, `info`, `warn`, or `error` |
+| `TLS_EXPIRY_WARN_DAYS` | `14` | Days before expiry that TLS checks report `degraded` |
+| `WEBHOOK_SIGNING_SECRET` | _empty_ | If set, webhook bodies are HMAC-SHA256 signed in `X-UpTime-Signature` |
+| `WEBHOOK_TIMEOUT_SECONDS` | `10` | Per-attempt webhook timeout |
+| `WEBHOOK_MAX_RETRIES` | `3` | Additional webhook attempts after the first failure (0–10) |
+| `SHUTDOWN_TIMEOUT_SECONDS` | `15` | Graceful shutdown deadline |
+| `API_READ_HEADER_TIMEOUT_SECONDS` | `5` | API `http.Server` read header timeout |
+| `API_WRITE_TIMEOUT_SECONDS` | `30` | API `http.Server` write timeout |
+| `MAX_REQUEST_BODY_BYTES` | `1048576` | Maximum accepted request body size in bytes |
+| `MIGRATIONS_DIR` | `migrations` | Directory containing `*.up.sql` files |
 
 ## API Examples
 

@@ -1,3 +1,6 @@
+// Package checks implements the synthetic checkers (HTTP, TCP, DNS, TLS).
+// Each Checker is stateless and safe for concurrent use; per-check state
+// lives in a CheckResult returned to the caller.
 package checks
 
 import (
@@ -14,14 +17,22 @@ import (
 	"github.com/jusso-dev/uptime/internal/models"
 )
 
+// maxSnippetBytes is the maximum amount of response body bytes captured for
+// keyword matching and operator debugging. Anything larger would bloat
+// check_results rows.
 const maxSnippetBytes = 4096
 
+// ErrBlockedTarget is returned when an SSRF guard rejects a target that
+// resolves to a non-public address. Using a sentinel error lets callers
+// distinguish policy violations from network errors with errors.Is.
 var ErrBlockedTarget = errors.New("target resolves to a private, loopback, link-local, or unspecified address")
 
 type Checker interface {
 	Check(ctx context.Context, monitor models.Monitor) (models.CheckResult, error)
 }
 
+// Options is shared configuration for every checker. Fields are read-only
+// after construction; Registry copies the struct into each checker.
 type Options struct {
 	AllowPrivateTargets bool
 	DefaultTimeout      time.Duration
@@ -29,6 +40,9 @@ type Options struct {
 	TLSExpiryWarnDays   int
 }
 
+// Registry bundles concrete checkers so the rest of the codebase can pick
+// the right one for a given monitor type without depending on each
+// implementation directly.
 type Registry struct {
 	HTTP Checker
 	TCP  Checker
@@ -37,11 +51,14 @@ type Registry struct {
 }
 
 func NewRegistry(opts Options) Registry {
-	if opts.DefaultTimeout == 0 {
+	if opts.DefaultTimeout <= 0 {
 		opts.DefaultTimeout = 10 * time.Second
 	}
 	if opts.UserAgent == "" {
 		opts.UserAgent = "UpTime-Monitor/1.0"
+	}
+	if opts.TLSExpiryWarnDays <= 0 {
+		opts.TLSExpiryWarnDays = 14
 	}
 	return Registry{
 		HTTP: HTTPChecker{Options: opts},
@@ -66,6 +83,8 @@ func (r Registry) For(monitorType models.MonitorType) (Checker, error) {
 	}
 }
 
+// TimeoutFor returns the effective check timeout, preferring the monitor's
+// own setting, then the package-level fallback, then a final 10s safety net.
 func TimeoutFor(m models.Monitor, fallback time.Duration) time.Duration {
 	if m.TimeoutSeconds > 0 {
 		return time.Duration(m.TimeoutSeconds) * time.Second
@@ -76,19 +95,25 @@ func TimeoutFor(m models.Monitor, fallback time.Duration) time.Duration {
 	return 10 * time.Second
 }
 
+// ValidateURL parses a target URL, enforces the http(s) scheme, and (unless
+// allowPrivate is true) ensures every resolved IP is publicly routable. The
+// resolution check here is a best-effort SSRF guard; the per-request dialer
+// re-checks at connect time to defend against DNS rebinding.
 func ValidateURL(raw string, allowPrivate bool) (*url.URL, error) {
 	u, err := url.ParseRequestURI(strings.TrimSpace(raw))
 	if err != nil {
 		return nil, fmt.Errorf("invalid url: %w", err)
 	}
 	if u.Scheme != "http" && u.Scheme != "https" {
-		return nil, fmt.Errorf("url scheme must be http or https")
+		return nil, fmt.Errorf("url scheme %q must be http or https", u.Scheme)
 	}
 	if u.Hostname() == "" {
 		return nil, fmt.Errorf("url host is required")
 	}
 	if !allowPrivate {
-		if err := validatePublicHost(context.Background(), u.Hostname()); err != nil {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		if err := validatePublicHost(ctx, u.Hostname()); err != nil {
 			return nil, err
 		}
 	}
@@ -98,10 +123,10 @@ func ValidateURL(raw string, allowPrivate bool) (*url.URL, error) {
 func validatePublicHost(ctx context.Context, host string) error {
 	ips, err := net.DefaultResolver.LookupIPAddr(ctx, host)
 	if err != nil {
-		return fmt.Errorf("resolve target host: %w", err)
+		return fmt.Errorf("resolve target host %q: %w", host, err)
 	}
 	if len(ips) == 0 {
-		return fmt.Errorf("target host did not resolve")
+		return fmt.Errorf("target host %q did not resolve", host)
 	}
 	for _, ip := range ips {
 		if !isPublicIP(ip.IP) {
@@ -111,11 +136,19 @@ func validatePublicHost(ctx context.Context, host string) error {
 	return nil
 }
 
+// isPublicIP returns true only for addresses that are safe to connect to
+// from a public-facing checker (no loopback, RFC1918, link-local, or
+// "unspecified" zero addresses).
 func isPublicIP(ip net.IP) bool {
 	if ip == nil {
 		return false
 	}
-	return !(ip.IsLoopback() || ip.IsPrivate() || ip.IsLinkLocalUnicast() || ip.IsLinkLocalMulticast() || ip.IsUnspecified())
+	return !(ip.IsLoopback() ||
+		ip.IsPrivate() ||
+		ip.IsLinkLocalUnicast() ||
+		ip.IsLinkLocalMulticast() ||
+		ip.IsInterfaceLocalMulticast() ||
+		ip.IsUnspecified())
 }
 
 func hostPort(target, defaultPort string) (string, string, error) {
@@ -125,15 +158,20 @@ func hostPort(target, defaultPort string) (string, string, error) {
 	}
 	host, port, err := net.SplitHostPort(value)
 	if err != nil {
-		if strings.Contains(err.Error(), "missing port in address") {
+		// SplitHostPort returns a typed addr error; the cleanest portable
+		// check is the substring it always uses.
+		if strings.Contains(err.Error(), "missing port in address") && defaultPort != "" {
 			host = value
 			port = defaultPort
 		} else {
-			return "", "", err
+			return "", "", fmt.Errorf("parse target %q: %w", value, err)
 		}
 	}
 	if host == "" || port == "" {
-		return "", "", fmt.Errorf("target must include host and port")
+		return "", "", fmt.Errorf("target %q must include host and port", value)
+	}
+	if _, err := net.LookupPort("tcp", port); err != nil {
+		return "", "", fmt.Errorf("invalid port %q: %w", port, err)
 	}
 	return host, port, nil
 }
@@ -147,6 +185,9 @@ func baseResult(m models.Monitor) models.CheckResult {
 	}
 }
 
+// traceTimings collects per-phase HTTP timings via httptrace callbacks.
+// Fields are written from goroutines owned by the net/http transport and
+// read by the caller after Do returns, so there is no concurrent access.
 type traceTimings struct {
 	start             time.Time
 	dnsStart          time.Time

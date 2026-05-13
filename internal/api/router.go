@@ -1,9 +1,13 @@
+// Package api wires the HTTP layer: routing, authentication, request
+// binding, error mapping, and observability middleware. Handlers stay thin
+// and delegate work to internal/service and internal/repository.
 package api
 
 import (
 	"context"
 	"crypto/subtle"
 	"errors"
+	"io"
 	"log/slog"
 	"net/http"
 	"strconv"
@@ -15,6 +19,7 @@ import (
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"github.com/redis/go-redis/v9"
 
+	"github.com/jusso-dev/uptime/internal/apierr"
 	"github.com/jusso-dev/uptime/internal/auth"
 	"github.com/jusso-dev/uptime/internal/config"
 	"github.com/jusso-dev/uptime/internal/metrics"
@@ -23,6 +28,14 @@ import (
 	"github.com/jusso-dev/uptime/internal/service"
 )
 
+// requestIDKey is the gin context key for the request correlation id. The
+// string value matches the X-Request-ID response header so logs and traces
+// line up with what clients see.
+const requestIDKey = "requestID"
+
+// Server holds the dependencies required by HTTP handlers. It is constructed
+// once at startup and is safe for concurrent use because every field is
+// either immutable (cfg) or itself safe for concurrent use.
 type Server struct {
 	cfg     config.Config
 	store   repository.Store
@@ -36,11 +49,17 @@ func NewRouter(cfg config.Config, store repository.Store, redisClient *redis.Cli
 	gin.SetMode(gin.ReleaseMode)
 	s := &Server{cfg: cfg, store: store, redis: redisClient, monitor: monitor, metrics: m, logger: logger}
 	r := gin.New()
-	r.Use(s.requestID(), gin.Recovery(), s.logging(), m.GinMiddleware())
+
+	// Middleware order matters: requestID first so every other middleware
+	// (including recovery, which logs) has a correlation id to attach.
+	r.Use(s.requestID(), s.recovery(), s.bodyLimit(), s.logging(), m.GinMiddleware())
+
 	r.GET("/health", s.health)
 	r.GET("/health-check", s.health)
 	r.GET("/metrics", gin.WrapH(promhttp.Handler()))
 	r.POST("/ping-endpoint", s.pingEndpoint)
+	r.NoRoute(s.notFound)
+	r.NoMethod(s.methodNotAllowed)
 
 	v1 := r.Group("/api/v1")
 	v1.Use(s.apiKeyAuth())
@@ -75,11 +94,13 @@ func (s *Server) health(c *gin.Context) {
 	dbStatus := "ok"
 	if err := s.store.Ping(ctx); err != nil {
 		dbStatus = "error"
+		s.logger.Warn("health: db ping failed", "request_id", c.GetString(requestIDKey), "error", err)
 	}
 	redisStatus := "ok"
 	if s.redis != nil {
 		if err := s.redis.Ping(ctx).Err(); err != nil {
 			redisStatus = "error"
+			s.logger.Warn("health: redis ping failed", "request_id", c.GetString(requestIDKey), "error", err)
 		}
 	}
 	status := http.StatusOK
@@ -87,7 +108,7 @@ func (s *Server) health(c *gin.Context) {
 		status = http.StatusServiceUnavailable
 	}
 	c.JSON(status, gin.H{
-		"status":   "ok",
+		"status":   statusLabel(status),
 		"version":  s.cfg.Version,
 		"database": dbStatus,
 		"redis":    redisStatus,
@@ -97,7 +118,7 @@ func (s *Server) health(c *gin.Context) {
 
 func (s *Server) pingEndpoint(c *gin.Context) {
 	var req struct {
-		Endpoint string `json:"endpoint" binding:"required"`
+		Endpoint string `json:"endpoint" binding:"required,url"`
 	}
 	if !bind(c, &req) {
 		return
@@ -124,7 +145,7 @@ func (s *Server) manualCheck(c *gin.Context) {
 
 func (s *Server) listMonitors(c *gin.Context) {
 	items, err := s.store.ListMonitors(c.Request.Context())
-	respond(c, items, err)
+	s.respond(c, items, err)
 }
 
 func (s *Server) createMonitor(c *gin.Context) {
@@ -132,13 +153,16 @@ func (s *Server) createMonitor(c *gin.Context) {
 	if !bind(c, &monitor) {
 		return
 	}
+	// Status is server-managed; never trust the client-supplied value.
+	monitor.Status = ""
+	monitor.ID = ""
 	created, err := s.store.CreateMonitor(c.Request.Context(), monitor)
-	respondStatus(c, http.StatusCreated, created, err)
+	s.respondStatus(c, http.StatusCreated, created, err)
 }
 
 func (s *Server) getMonitor(c *gin.Context) {
 	item, err := s.store.GetMonitor(c.Request.Context(), c.Param("id"))
-	respond(c, item, err)
+	s.respond(c, item, err)
 }
 
 func (s *Server) updateMonitor(c *gin.Context) {
@@ -148,17 +172,21 @@ func (s *Server) updateMonitor(c *gin.Context) {
 	}
 	monitor.ID = c.Param("id")
 	updated, err := s.store.UpdateMonitor(c.Request.Context(), monitor)
-	respond(c, updated, err)
+	s.respond(c, updated, err)
 }
 
 func (s *Server) deleteMonitor(c *gin.Context) {
-	respond(c, gin.H{"deleted": true}, s.store.DeleteMonitor(c.Request.Context(), c.Param("id")))
+	if err := s.store.DeleteMonitor(c.Request.Context(), c.Param("id")); err != nil {
+		s.respond(c, nil, err)
+		return
+	}
+	c.Status(http.StatusNoContent)
 }
 
 func (s *Server) checkNow(c *gin.Context) {
 	monitor, err := s.store.GetMonitor(c.Request.Context(), c.Param("id"))
 	if err != nil {
-		respond(c, nil, err)
+		s.respond(c, nil, err)
 		return
 	}
 	result, err := s.monitor.RunCheck(c.Request.Context(), monitor)
@@ -169,27 +197,27 @@ func (s *Server) monitorResults(c *gin.Context) {
 	filter := resultFilter(c)
 	filter.MonitorID = c.Param("id")
 	results, err := s.store.ListCheckResults(c.Request.Context(), filter)
-	respond(c, results, err)
+	s.respond(c, results, err)
 }
 
 func (s *Server) checkResults(c *gin.Context) {
 	results, err := s.store.ListCheckResults(c.Request.Context(), resultFilter(c))
-	respond(c, results, err)
+	s.respond(c, results, err)
 }
 
 func (s *Server) listIncidents(c *gin.Context) {
 	items, err := s.store.ListIncidents(c.Request.Context())
-	respond(c, items, err)
+	s.respond(c, items, err)
 }
 
 func (s *Server) getIncident(c *gin.Context) {
 	item, err := s.store.GetIncident(c.Request.Context(), c.Param("id"))
-	respond(c, item, err)
+	s.respond(c, item, err)
 }
 
 func (s *Server) resolveIncident(c *gin.Context) {
 	item, err := s.store.ResolveIncident(c.Request.Context(), c.Param("id"))
-	respond(c, item, err)
+	s.respond(c, item, err)
 }
 
 func (s *Server) overviewStats(c *gin.Context) {
@@ -197,14 +225,14 @@ func (s *Server) overviewStats(c *gin.Context) {
 	if err == nil && s.metrics != nil {
 		s.metrics.OpenIncidents.Set(float64(stats.OpenIncidents))
 	}
-	respond(c, stats, err)
+	s.respond(c, stats, err)
 }
 
 func (s *Server) monitorStats(c *gin.Context) {
 	filter := models.ResultFilter{MonitorID: c.Param("id"), Limit: 500}
 	results, err := s.store.ListCheckResults(c.Request.Context(), filter)
 	if err != nil {
-		respond(c, nil, err)
+		s.respond(c, nil, err)
 		return
 	}
 	total, up, sum := len(results), 0, int64(0)
@@ -218,12 +246,18 @@ func (s *Server) monitorStats(c *gin.Context) {
 	if total > 0 {
 		avg = float64(sum) / float64(total)
 	}
-	c.JSON(http.StatusOK, gin.H{"monitorId": c.Param("id"), "checks": total, "successfulChecks": up, "uptimePercentage": percentage(up, total), "averageResponseMs": avg})
+	c.JSON(http.StatusOK, gin.H{
+		"monitorId":         c.Param("id"),
+		"checks":            total,
+		"successfulChecks":  up,
+		"uptimePercentage":  percentage(up, total),
+		"averageResponseMs": avg,
+	})
 }
 
 func (s *Server) listNotificationChannels(c *gin.Context) {
 	items, err := s.store.ListNotificationChannels(c.Request.Context())
-	respond(c, items, err)
+	s.respond(c, items, err)
 }
 
 func (s *Server) createNotificationChannel(c *gin.Context) {
@@ -231,8 +265,9 @@ func (s *Server) createNotificationChannel(c *gin.Context) {
 	if !bind(c, &channel) {
 		return
 	}
+	channel.ID = ""
 	created, err := s.store.CreateNotificationChannel(c.Request.Context(), channel)
-	respondStatus(c, http.StatusCreated, created, err)
+	s.respondStatus(c, http.StatusCreated, created, err)
 }
 
 func (s *Server) updateNotificationChannel(c *gin.Context) {
@@ -242,17 +277,21 @@ func (s *Server) updateNotificationChannel(c *gin.Context) {
 	}
 	channel.ID = c.Param("id")
 	updated, err := s.store.UpdateNotificationChannel(c.Request.Context(), channel)
-	respond(c, updated, err)
+	s.respond(c, updated, err)
 }
 
 func (s *Server) deleteNotificationChannel(c *gin.Context) {
-	respond(c, gin.H{"deleted": true}, s.store.DeleteNotificationChannel(c.Request.Context(), c.Param("id")))
+	if err := s.store.DeleteNotificationChannel(c.Request.Context(), c.Param("id")); err != nil {
+		s.respond(c, nil, err)
+		return
+	}
+	c.Status(http.StatusNoContent)
 }
 
 func (s *Server) testNotificationChannel(c *gin.Context) {
-	channel, err := s.findNotificationChannel(c.Request.Context(), c.Param("id"))
+	channel, err := s.store.GetNotificationChannel(c.Request.Context(), c.Param("id"))
 	if err != nil {
-		respond(c, nil, err)
+		s.respond(c, nil, err)
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{"ok": true, "channel": channel.ID})
@@ -260,41 +299,54 @@ func (s *Server) testNotificationChannel(c *gin.Context) {
 
 func (s *Server) createAPIKey(c *gin.Context) {
 	var req struct {
-		Name string `json:"name" binding:"required"`
+		Name string `json:"name" binding:"required,min=1,max=64"`
 	}
 	if !bind(c, &req) {
 		return
 	}
 	raw, err := auth.NewRawKey()
 	if err != nil {
-		respond(c, nil, err)
+		s.respond(c, nil, err)
 		return
 	}
 	key, err := s.store.CreateAPIKey(c.Request.Context(), models.APIKey{Name: req.Name, KeyHash: auth.Hash(raw)})
 	if err != nil {
-		respond(c, nil, err)
+		s.respond(c, nil, err)
 		return
 	}
+	// `key` is shown ONCE to the caller; never returned by list/get.
 	c.JSON(http.StatusCreated, gin.H{"id": key.ID, "name": key.Name, "key": raw, "createdAt": key.CreatedAt})
 }
 
 func (s *Server) listAPIKeys(c *gin.Context) {
 	keys, err := s.store.ListAPIKeys(c.Request.Context())
-	respond(c, keys, err)
+	s.respond(c, keys, err)
 }
 
 func (s *Server) revokeAPIKey(c *gin.Context) {
-	respond(c, gin.H{"revoked": true}, s.store.RevokeAPIKey(c.Request.Context(), c.Param("id")))
+	if err := s.store.RevokeAPIKey(c.Request.Context(), c.Param("id")); err != nil {
+		s.respond(c, nil, err)
+		return
+	}
+	c.Status(http.StatusNoContent)
 }
 
+// apiKeyAuth authenticates every /api/v1 request. The bootstrap key is
+// compared with constant-time equality; database keys are matched by SHA-256
+// hash, also via constant-time comparison inside auth.Matches.
 func (s *Server) apiKeyAuth() gin.HandlerFunc {
 	return func(c *gin.Context) {
 		raw := bearer(c.GetHeader("Authorization"))
 		if raw == "" {
-			raw = c.GetHeader("X-API-Key")
+			raw = strings.TrimSpace(c.GetHeader("X-API-Key"))
 		}
 		if raw == "" {
-			c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"error": "api key required"})
+			s.unauthorized(c, "api key required")
+			return
+		}
+		if len(raw) > 256 {
+			// Avoid hashing pathologically large headers.
+			s.unauthorized(c, "invalid api key")
 			return
 		}
 		if subtle.ConstantTimeCompare([]byte(raw), []byte(s.cfg.BootstrapAPIKey)) == 1 {
@@ -302,23 +354,85 @@ func (s *Server) apiKeyAuth() gin.HandlerFunc {
 			return
 		}
 		key, err := s.store.FindAPIKeyByHash(c.Request.Context(), auth.Hash(raw))
-		if err != nil || key == nil {
-			c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"error": "invalid api key"})
+		if err != nil {
+			s.logger.Error("auth: lookup failed", "request_id", c.GetString(requestIDKey), "error", err)
+			s.unauthorized(c, "invalid api key")
 			return
 		}
-		_ = s.store.TouchAPIKey(c.Request.Context(), key.ID)
+		if key == nil {
+			s.unauthorized(c, "invalid api key")
+			return
+		}
+		// Fire-and-forget; touch failures should not block authenticated
+		// requests but we still want them in logs.
+		if err := s.store.TouchAPIKey(c.Request.Context(), key.ID); err != nil {
+			s.logger.Warn("auth: touch api key failed", "request_id", c.GetString(requestIDKey), "key_id", key.ID, "error", err)
+		}
+		c.Set("apiKeyID", key.ID)
 		c.Next()
 	}
 }
 
+func (s *Server) unauthorized(c *gin.Context, message string) {
+	c.Header("WWW-Authenticate", `Bearer realm="uptime"`)
+	c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"error": message, "requestId": c.GetString(requestIDKey)})
+}
+
+func (s *Server) notFound(c *gin.Context) {
+	c.JSON(http.StatusNotFound, gin.H{"error": "route not found", "requestId": c.GetString(requestIDKey)})
+}
+
+func (s *Server) methodNotAllowed(c *gin.Context) {
+	c.JSON(http.StatusMethodNotAllowed, gin.H{"error": "method not allowed", "requestId": c.GetString(requestIDKey)})
+}
+
 func (s *Server) requestID() gin.HandlerFunc {
 	return func(c *gin.Context) {
-		requestID := c.GetHeader("X-Request-ID")
-		if requestID == "" {
+		requestID := strings.TrimSpace(c.GetHeader("X-Request-ID"))
+		// Reject unreasonably long client-supplied request ids to keep logs
+		// tidy and prevent abuse.
+		if requestID == "" || len(requestID) > 128 {
 			requestID = uuid.NewString()
 		}
 		c.Header("X-Request-ID", requestID)
-		c.Set("requestID", requestID)
+		c.Set(requestIDKey, requestID)
+		c.Next()
+	}
+}
+
+// bodyLimit caps the request body to cfg.MaxRequestBodyBytes. The limit is
+// enforced lazily by http.MaxBytesReader, which makes ReadAll fail with a
+// clear *http.MaxBytesError once exceeded.
+func (s *Server) bodyLimit() gin.HandlerFunc {
+	limit := s.cfg.MaxRequestBodyBytes
+	return func(c *gin.Context) {
+		if c.Request.Body != nil && limit > 0 {
+			c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, limit)
+		}
+		c.Next()
+	}
+}
+
+// recovery converts panics into 500 responses and structured logs. Replacing
+// gin.Recovery() lets us include the request id in the panic log line.
+func (s *Server) recovery() gin.HandlerFunc {
+	return func(c *gin.Context) {
+		defer func() {
+			if r := recover(); r != nil {
+				s.logger.Error("panic recovered",
+					"request_id", c.GetString(requestIDKey),
+					"method", c.Request.Method,
+					"path", c.Request.URL.Path,
+					"panic", r,
+				)
+				if !c.Writer.Written() {
+					c.AbortWithStatusJSON(http.StatusInternalServerError, gin.H{
+						"error":     "internal server error",
+						"requestId": c.GetString(requestIDKey),
+					})
+				}
+			}
+		}()
 		c.Next()
 	}
 }
@@ -328,52 +442,87 @@ func (s *Server) logging() gin.HandlerFunc {
 		start := time.Now()
 		c.Next()
 		s.logger.Info("request",
-			"request_id", c.GetString("requestID"),
+			"request_id", c.GetString(requestIDKey),
 			"method", c.Request.Method,
 			"path", c.Request.URL.Path,
 			"status", c.Writer.Status(),
 			"duration_ms", time.Since(start).Milliseconds(),
+			"client_ip", c.ClientIP(),
+			"user_agent", c.Request.UserAgent(),
 		)
 	}
 }
 
 func bind(c *gin.Context, dst any) bool {
 	if err := c.ShouldBindJSON(dst); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		// Distinguish body-size violations from validation errors so
+		// callers see the right status code.
+		var maxBytesErr *http.MaxBytesError
+		if errors.As(err, &maxBytesErr) {
+			c.AbortWithStatusJSON(http.StatusRequestEntityTooLarge, gin.H{
+				"error":     "request body exceeds limit",
+				"limit":     maxBytesErr.Limit,
+				"requestId": c.GetString(requestIDKey),
+			})
+			return false
+		}
+		if errors.Is(err, io.EOF) {
+			c.AbortWithStatusJSON(http.StatusBadRequest, gin.H{
+				"error":     "request body is required",
+				"requestId": c.GetString(requestIDKey),
+			})
+			return false
+		}
+		c.AbortWithStatusJSON(http.StatusBadRequest, gin.H{
+			"error":     "invalid request body: " + err.Error(),
+			"requestId": c.GetString(requestIDKey),
+		})
 		return false
 	}
 	return true
 }
 
-func respond(c *gin.Context, payload any, err error) {
-	respondStatus(c, http.StatusOK, payload, err)
+func (s *Server) respond(c *gin.Context, payload any, err error) {
+	s.respondStatus(c, http.StatusOK, payload, err)
 }
 
-func respondStatus(c *gin.Context, status int, payload any, err error) {
+func (s *Server) respondStatus(c *gin.Context, status int, payload any, err error) {
 	if err != nil {
-		code := http.StatusInternalServerError
-		if errors.Is(err, context.Canceled) {
-			code = http.StatusRequestTimeout
+		code := apierr.StatusFor(err)
+		message := apierr.PublicMessage(err)
+		if code >= 500 {
+			s.logger.Error("handler error",
+				"request_id", c.GetString(requestIDKey),
+				"method", c.Request.Method,
+				"path", c.Request.URL.Path,
+				"error", err,
+			)
 		}
-		c.JSON(code, gin.H{"error": err.Error()})
+		c.JSON(code, gin.H{"error": message, "requestId": c.GetString(requestIDKey)})
 		return
 	}
 	c.JSON(status, payload)
 }
 
+// writeCheck handles the legacy ping-style endpoints whose response is the
+// CheckResult itself. A failure during validation (e.g. blocked target) is a
+// 400; a non-2xx result with a captured CheckResult is still a 200 because
+// the client asked us to perform the check and we did.
 func writeCheck(c *gin.Context, result models.CheckResult, err error) {
-	if err != nil && result.Error == "" {
-		result.Error = err.Error()
-	}
-	status := http.StatusOK
 	if err != nil {
-		status = http.StatusBadRequest
+		if result.MonitorID == "" && result.Status == "" {
+			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error(), "requestId": c.GetString(requestIDKey)})
+			return
+		}
+		if result.Error == "" {
+			result.Error = err.Error()
+		}
 	}
-	c.JSON(status, result)
+	c.JSON(http.StatusOK, result)
 }
 
 func bearer(header string) string {
-	if strings.HasPrefix(strings.ToLower(header), "bearer ") {
+	if len(header) >= 7 && strings.EqualFold(header[:7], "Bearer ") {
 		return strings.TrimSpace(header[7:])
 	}
 	return ""
@@ -385,6 +534,15 @@ func resultFilter(c *gin.Context) models.ResultFilter {
 		Status:    c.Query("status"),
 		Limit:     atoiDefault(c.Query("limit"), 100),
 		Offset:    atoiDefault(c.Query("offset"), 0),
+	}
+	if filter.Limit < 1 {
+		filter.Limit = 100
+	}
+	if filter.Limit > 500 {
+		filter.Limit = 500
+	}
+	if filter.Offset < 0 {
+		filter.Offset = 0
 	}
 	if value := c.Query("checkedAfter"); value != "" {
 		if parsed, err := time.Parse(time.RFC3339, value); err == nil {
@@ -414,15 +572,9 @@ func percentage(success, total int) float64 {
 	return float64(success) / float64(total) * 100
 }
 
-func (s *Server) findNotificationChannel(ctx context.Context, id string) (models.NotificationChannel, error) {
-	channels, err := s.store.ListNotificationChannels(ctx)
-	if err != nil {
-		return models.NotificationChannel{}, err
+func statusLabel(code int) string {
+	if code >= 200 && code < 300 {
+		return "ok"
 	}
-	for _, channel := range channels {
-		if channel.ID == id {
-			return channel, nil
-		}
-	}
-	return models.NotificationChannel{}, errors.New("notification channel not found")
+	return "degraded"
 }

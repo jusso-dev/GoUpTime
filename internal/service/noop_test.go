@@ -43,6 +43,9 @@ func (StoreNoop) ResolveIncident(context.Context, string) (models.Incident, erro
 func (StoreNoop) ListNotificationChannels(context.Context) ([]models.NotificationChannel, error) {
 	return nil, nil
 }
+func (StoreNoop) GetNotificationChannel(context.Context, string) (models.NotificationChannel, error) {
+	return models.NotificationChannel{}, nil
+}
 func (StoreNoop) CreateNotificationChannel(context.Context, models.NotificationChannel) (models.NotificationChannel, error) {
 	return models.NotificationChannel{}, nil
 }

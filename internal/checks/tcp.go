@@ -2,6 +2,7 @@ package checks
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net"
 	"time"
@@ -31,14 +32,20 @@ func (c TCPChecker) Check(ctx context.Context, monitor models.Monitor) (models.C
 	checkCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 
+	dialer := &net.Dialer{Timeout: timeout}
 	start := time.Now()
-	conn, err := (&net.Dialer{Timeout: timeout}).DialContext(checkCtx, "tcp", net.JoinHostPort(host, port))
+	conn, err := dialer.DialContext(checkCtx, "tcp", net.JoinHostPort(host, port))
 	result.CheckedAt = time.Now().UTC()
 	result.TotalMS = time.Since(start).Milliseconds()
 	result.TCPConnectMS = result.TotalMS
 	result.ResponseTimeMS = result.TotalMS
 	if err != nil {
-		result.Error = fmt.Sprintf("tcp connect failed: %v", err)
+		switch {
+		case errors.Is(err, context.DeadlineExceeded):
+			result.Error = fmt.Sprintf("tcp connect to %s:%s timed out after %s", host, port, timeout)
+		default:
+			result.Error = fmt.Sprintf("tcp connect to %s:%s failed: %v", host, port, err)
+		}
 		return result, err
 	}
 	_ = conn.Close()
