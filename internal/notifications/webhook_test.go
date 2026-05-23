@@ -142,6 +142,28 @@ func (r *recordingStore) DeleteMembership(context.Context, string, string) error
 func (r *recordingStore) RecordWebhookEvent(context.Context, string, string, []byte) (bool, error) {
 	return true, nil
 }
+func (r *recordingStore) GetHeartbeat(context.Context, string) (models.Heartbeat, error) {
+	return models.Heartbeat{}, nil
+}
+func (r *recordingStore) SetHeartbeat(context.Context, models.Heartbeat) (models.Heartbeat, error) {
+	return models.Heartbeat{}, nil
+}
+func (r *recordingStore) DeleteHeartbeat(context.Context, string) error { return nil }
+func (r *recordingStore) RecordHeartbeatPing(context.Context, string, string, string) (string, error) {
+	return "", nil
+}
+func (r *recordingStore) GetMultistepScript(context.Context, string) (models.MultistepScript, error) {
+	return models.MultistepScript{}, nil
+}
+func (r *recordingStore) SetMultistepScript(context.Context, models.MultistepScript) (models.MultistepScript, error) {
+	return models.MultistepScript{}, nil
+}
+func (r *recordingStore) GetBrowserScript(context.Context, string) (models.BrowserScript, error) {
+	return models.BrowserScript{}, nil
+}
+func (r *recordingStore) SetBrowserScript(context.Context, models.BrowserScript) (models.BrowserScript, error) {
+	return models.BrowserScript{}, nil
+}
 
 func TestDeliverSignsAndRecordsSuccess(t *testing.T) {
 	secret := "shhh-this-is-secret"

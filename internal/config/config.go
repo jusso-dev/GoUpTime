@@ -52,6 +52,17 @@ type Config struct {
 	// clients. Development mode (APP_ENV != production) additionally allows
 	// localhost and Expo (exp://) origins for convenience.
 	CORSAllowedOrigins []string
+
+	// Check-type gates. Browser checks need the Playwright sidecar to be
+	// running; ICMP needs ping_group_range/CAP_NET_RAW on the host. Both
+	// default off so a fresh install doesn't emit spurious failures.
+	BrowserCheckEnabled bool
+	ICMPCheckEnabled    bool
+
+	// AppBaseURL is the public-facing URL of the API. Used to build
+	// heartbeat ping URLs and incident deep links surfaced to integrations
+	// (Slack, email).
+	AppBaseURL string
 }
 
 // IsProduction returns true when APP_ENV indicates a non-development
@@ -84,6 +95,7 @@ func Load() (Config, error) {
 		ClerkSecretKey:             getenv("CLERK_SECRET_KEY", ""),
 		ClerkPublishableKey:        getenv("CLERK_PUBLISHABLE_KEY", ""),
 		ClerkWebhookSecret:         getenv("CLERK_WEBHOOK_SECRET", ""),
+		AppBaseURL:                 strings.TrimRight(getenv("APP_BASE_URL", "http://localhost:8008"), "/"),
 	}
 
 	cfg.CORSAllowedOrigins = splitCSV(getenv("CORS_ALLOWED_ORIGINS", ""))
@@ -100,6 +112,14 @@ func Load() (Config, error) {
 	}
 
 	cfg.ClerkEnabled, err = getenvBool("CLERK_ENABLED", false)
+	if err != nil {
+		return Config{}, err
+	}
+	cfg.BrowserCheckEnabled, err = getenvBool("BROWSER_CHECK_ENABLED", false)
+	if err != nil {
+		return Config{}, err
+	}
+	cfg.ICMPCheckEnabled, err = getenvBool("ICMP_ENABLED", false)
 	if err != nil {
 		return Config{}, err
 	}

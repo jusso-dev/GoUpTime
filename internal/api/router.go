@@ -64,6 +64,11 @@ func NewRouter(cfg config.Config, store repository.Store, redisClient *redis.Cli
 	r.GET("/metrics", gin.WrapH(promhttp.Handler()))
 	r.POST("/ping-endpoint", s.pingEndpoint)
 	r.POST("/webhooks/clerk", s.clerkWebhook)
+	// Heartbeat ping endpoint is intentionally public; the URL-embedded
+	// token IS the authentication. Both POST and GET are accepted so
+	// `curl https://.../ping` from a cron entry works without flags.
+	r.POST("/api/v1/heartbeats/:token/ping", s.heartbeatPing)
+	r.GET("/api/v1/heartbeats/:token/ping", s.heartbeatPing)
 	// Operator-facing dashboard. The HTML is unauthenticated; it prompts
 	// the user for an API key client-side and uses it for the protected
 	// /api/v1/workers/status XHR. This matches the rest of the API.
@@ -83,6 +88,12 @@ func NewRouter(cfg config.Config, store repository.Store, redisClient *redis.Cli
 	v1.DELETE("/monitors/:id", s.requireRole(auth.RoleAdmin), s.deleteMonitor)
 	v1.POST("/monitors/:id/check-now", s.checkNow)
 	v1.GET("/monitors/:id/results", s.monitorResults)
+	v1.GET("/monitors/:id/heartbeat", s.getMonitorHeartbeat)
+	v1.POST("/monitors/:id/heartbeat", s.requireRole(auth.RoleMember), s.setMonitorHeartbeat)
+	v1.GET("/monitors/:id/multistep", s.getMonitorMultistep)
+	v1.PUT("/monitors/:id/multistep", s.requireRole(auth.RoleMember), s.setMonitorMultistep)
+	v1.GET("/monitors/:id/browser-script", s.getMonitorBrowserScript)
+	v1.PUT("/monitors/:id/browser-script", s.requireRole(auth.RoleMember), s.setMonitorBrowserScript)
 	v1.GET("/check-results", s.checkResults)
 	v1.GET("/incidents", s.listIncidents)
 	v1.GET("/incidents/:id", s.getIncident)

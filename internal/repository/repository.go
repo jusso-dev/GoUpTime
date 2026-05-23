@@ -74,4 +74,16 @@ type Store interface {
 	// Webhook event dedup: returns true if the event id was newly recorded,
 	// false if it had been seen before.
 	RecordWebhookEvent(ctx context.Context, id, source string, payload []byte) (bool, error)
+
+	// Heartbeat (push monitor) management.
+	GetHeartbeat(ctx context.Context, monitorID string) (models.Heartbeat, error)
+	SetHeartbeat(ctx context.Context, hb models.Heartbeat) (models.Heartbeat, error)
+	DeleteHeartbeat(ctx context.Context, monitorID string) error
+	RecordHeartbeatPing(ctx context.Context, tokenHash, sourceIP, userAgent string) (string, error)
+
+	// Per-monitor script storage for the multistep and browser check types.
+	GetMultistepScript(ctx context.Context, monitorID string) (models.MultistepScript, error)
+	SetMultistepScript(ctx context.Context, script models.MultistepScript) (models.MultistepScript, error)
+	GetBrowserScript(ctx context.Context, monitorID string) (models.BrowserScript, error)
+	SetBrowserScript(ctx context.Context, script models.BrowserScript) (models.BrowserScript, error)
 }

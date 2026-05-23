@@ -135,6 +135,28 @@ func (f *fakeStore) DeleteMembership(context.Context, string, string) error    {
 func (f *fakeStore) RecordWebhookEvent(context.Context, string, string, []byte) (bool, error) {
 	return true, nil
 }
+func (f *fakeStore) GetHeartbeat(context.Context, string) (models.Heartbeat, error) {
+	return models.Heartbeat{}, nil
+}
+func (f *fakeStore) SetHeartbeat(context.Context, models.Heartbeat) (models.Heartbeat, error) {
+	return models.Heartbeat{}, nil
+}
+func (f *fakeStore) DeleteHeartbeat(context.Context, string) error { return nil }
+func (f *fakeStore) RecordHeartbeatPing(context.Context, string, string, string) (string, error) {
+	return "", nil
+}
+func (f *fakeStore) GetMultistepScript(context.Context, string) (models.MultistepScript, error) {
+	return models.MultistepScript{}, nil
+}
+func (f *fakeStore) SetMultistepScript(context.Context, models.MultistepScript) (models.MultistepScript, error) {
+	return models.MultistepScript{}, nil
+}
+func (f *fakeStore) GetBrowserScript(context.Context, string) (models.BrowserScript, error) {
+	return models.BrowserScript{}, nil
+}
+func (f *fakeStore) SetBrowserScript(context.Context, models.BrowserScript) (models.BrowserScript, error) {
+	return models.BrowserScript{}, nil
+}
 
 // sharedMetrics is built once because metrics.New uses promauto, which
 // registers against the default registry — calling it twice would panic

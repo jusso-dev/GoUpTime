@@ -108,3 +108,26 @@ func (StoreNoop) DeleteMembership(context.Context, string, string) error    { re
 func (StoreNoop) RecordWebhookEvent(context.Context, string, string, []byte) (bool, error) {
 	return true, nil
 }
+
+func (StoreNoop) GetHeartbeat(context.Context, string) (models.Heartbeat, error) {
+	return models.Heartbeat{}, nil
+}
+func (StoreNoop) SetHeartbeat(context.Context, models.Heartbeat) (models.Heartbeat, error) {
+	return models.Heartbeat{}, nil
+}
+func (StoreNoop) DeleteHeartbeat(context.Context, string) error { return nil }
+func (StoreNoop) RecordHeartbeatPing(context.Context, string, string, string) (string, error) {
+	return "", nil
+}
+func (StoreNoop) GetMultistepScript(context.Context, string) (models.MultistepScript, error) {
+	return models.MultistepScript{}, nil
+}
+func (StoreNoop) SetMultistepScript(context.Context, models.MultistepScript) (models.MultistepScript, error) {
+	return models.MultistepScript{}, nil
+}
+func (StoreNoop) GetBrowserScript(context.Context, string) (models.BrowserScript, error) {
+	return models.BrowserScript{}, nil
+}
+func (StoreNoop) SetBrowserScript(context.Context, models.BrowserScript) (models.BrowserScript, error) {
+	return models.BrowserScript{}, nil
+}

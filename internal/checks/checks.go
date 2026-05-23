@@ -1,6 +1,7 @@
-// Package checks implements the synthetic checkers (HTTP, TCP, DNS, TLS).
-// Each Checker is stateless and safe for concurrent use; per-check state
-// lives in a CheckResult returned to the caller.
+// Package checks implements the synthetic checkers (HTTP, TCP, DNS, TLS,
+// Heartbeat, ICMP, Domain, Multistep, Browser). Each Checker is stateless
+// and safe for concurrent use; per-check state lives in a CheckResult
+// returned to the caller.
 package checks
 
 import (
@@ -13,6 +14,8 @@ import (
 	"net/url"
 	"strings"
 	"time"
+
+	"github.com/redis/go-redis/v9"
 
 	"github.com/jusso-dev/uptime/internal/models"
 )
@@ -38,16 +41,36 @@ type Options struct {
 	DefaultTimeout      time.Duration
 	UserAgent           string
 	TLSExpiryWarnDays   int
+
+	// HeartbeatStore is required for heartbeat checks; nil disables them.
+	HeartbeatStore HeartbeatStore
+	// MultistepStore is required for multi-step checks.
+	MultistepStore MultistepStore
+	// BrowserStore is required for browser checks.
+	BrowserStore BrowserStore
+	// Redis client used to dispatch browser jobs to the Node sidecar.
+	Redis *redis.Client
+	// BrowserEnabled gates browser-check execution; allows operators to
+	// keep the schema/migrations in place without standing up the sidecar.
+	BrowserEnabled bool
+	// ICMPEnabled gates ICMP-check execution; allows operators on hosts
+	// that block ICMP to keep the migration without spurious failures.
+	ICMPEnabled bool
 }
 
 // Registry bundles concrete checkers so the rest of the codebase can pick
 // the right one for a given monitor type without depending on each
 // implementation directly.
 type Registry struct {
-	HTTP Checker
-	TCP  Checker
-	DNS  Checker
-	TLS  Checker
+	HTTP      Checker
+	TCP       Checker
+	DNS       Checker
+	TLS       Checker
+	Heartbeat Checker
+	ICMP      Checker
+	Domain    Checker
+	Multistep Checker
+	Browser   Checker
 }
 
 func NewRegistry(opts Options) Registry {
@@ -61,10 +84,15 @@ func NewRegistry(opts Options) Registry {
 		opts.TLSExpiryWarnDays = 14
 	}
 	return Registry{
-		HTTP: HTTPChecker{Options: opts},
-		TCP:  TCPChecker{Options: opts},
-		DNS:  DNSChecker{Options: opts},
-		TLS:  TLSChecker{Options: opts},
+		HTTP:      HTTPChecker{Options: opts},
+		TCP:       TCPChecker{Options: opts},
+		DNS:       DNSChecker{Options: opts},
+		TLS:       TLSChecker{Options: opts},
+		Heartbeat: HeartbeatChecker{Options: opts, Store: opts.HeartbeatStore},
+		ICMP:      ICMPChecker{Options: opts},
+		Domain:    DomainChecker{Options: opts},
+		Multistep: MultistepChecker{Options: opts, Store: opts.MultistepStore},
+		Browser:   BrowserChecker{Options: opts, Store: opts.BrowserStore, Redis: opts.Redis, Enabled: opts.BrowserEnabled},
 	}
 }
 
@@ -78,6 +106,16 @@ func (r Registry) For(monitorType models.MonitorType) (Checker, error) {
 		return r.DNS, nil
 	case models.MonitorTLS:
 		return r.TLS, nil
+	case models.MonitorHeartbeat:
+		return r.Heartbeat, nil
+	case models.MonitorICMP:
+		return r.ICMP, nil
+	case models.MonitorDomain:
+		return r.Domain, nil
+	case models.MonitorMultistep:
+		return r.Multistep, nil
+	case models.MonitorBrowser:
+		return r.Browser, nil
 	default:
 		return nil, fmt.Errorf("unsupported monitor type %q", monitorType)
 	}

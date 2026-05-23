@@ -80,6 +80,12 @@ func run() int {
 		DefaultTimeout:      cfg.DefaultTimeout(),
 		UserAgent:           cfg.HTTPUserAgent,
 		TLSExpiryWarnDays:   cfg.TLSExpiryWarnDays,
+		HeartbeatStore:      store,
+		MultistepStore:      store,
+		BrowserStore:        store,
+		Redis:               redisClient,
+		BrowserEnabled:      cfg.BrowserCheckEnabled,
+		ICMPEnabled:         cfg.ICMPCheckEnabled,
 	})
 	notifier := notifications.NewService(store, notifications.Options{
 		AllowPrivateTargets: cfg.AllowPrivateTargets,

@@ -122,7 +122,7 @@ const (
 		timeout_seconds, interval_seconds, failure_threshold, enabled, status, created_at, updated_at`
 
 	checkResultColumns = `id, organization_id, monitor_id, status, success, response_time_ms, status_code, error,
-		checked_at, dns_ms, tcp_connect_ms, tls_handshake_ms, time_to_first_byte_ms, total_ms, response_snippet`
+		checked_at, dns_ms, tcp_connect_ms, tls_handshake_ms, time_to_first_byte_ms, total_ms, response_snippet, domain_expires_at`
 )
 
 func normalizeMonitor(m models.Monitor) models.Monitor {
@@ -307,10 +307,10 @@ func (s *PostgresStore) CreateCheckResult(ctx context.Context, result models.Che
 	}
 	row := s.pool.QueryRow(ctx, `
 		INSERT INTO check_results (`+checkResultColumns+`)
-		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15)
+		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16)
 		RETURNING `+checkResultColumns,
 		result.ID, result.OrganizationID, result.MonitorID, result.Status, result.Success, result.ResponseTimeMS, result.StatusCode, result.Error,
-		result.CheckedAt, result.DNSMS, result.TCPConnectMS, result.TLSHandshakeMS, result.TimeToFirstByteMS, result.TotalMS, result.ResponseSnippet)
+		result.CheckedAt, result.DNSMS, result.TCPConnectMS, result.TLSHandshakeMS, result.TimeToFirstByteMS, result.TotalMS, result.ResponseSnippet, result.DomainExpiresAt)
 	r, err := scanCheckResult(row)
 	return r, translateError(err)
 }
@@ -418,6 +418,6 @@ func scanMonitors(rows pgx.Rows) ([]models.Monitor, error) {
 func scanCheckResult(row pgx.Row) (models.CheckResult, error) {
 	var r models.CheckResult
 	err := row.Scan(&r.ID, &r.OrganizationID, &r.MonitorID, &r.Status, &r.Success, &r.ResponseTimeMS, &r.StatusCode, &r.Error, &r.CheckedAt,
-		&r.DNSMS, &r.TCPConnectMS, &r.TLSHandshakeMS, &r.TimeToFirstByteMS, &r.TotalMS, &r.ResponseSnippet)
+		&r.DNSMS, &r.TCPConnectMS, &r.TLSHandshakeMS, &r.TimeToFirstByteMS, &r.TotalMS, &r.ResponseSnippet, &r.DomainExpiresAt)
 	return r, err
 }

@@ -18,6 +18,7 @@ import (
 	"time"
 
 	"github.com/prometheus/client_golang/prometheus/promhttp"
+	"github.com/redis/go-redis/v9"
 
 	"github.com/jusso-dev/uptime/internal/checks"
 	"github.com/jusso-dev/uptime/internal/config"
@@ -57,11 +58,30 @@ func run() int {
 
 	store := repository.NewPostgresStore(pool)
 	m := metrics.New()
+
+	// Redis is optional for the worker today (browser-check submission is
+	// the only consumer). If the URL is unreachable the worker still runs
+	// every non-browser check type — browser monitors will simply report
+	// "queue unavailable" until Redis is back.
+	var redisClient *redis.Client
+	if opts, err := redis.ParseURL(cfg.RedisURL); err == nil {
+		redisClient = redis.NewClient(opts)
+		defer redisClient.Close()
+	} else {
+		logger.Warn("redis url invalid; browser checks disabled", "error", err)
+	}
+
 	registry := checks.NewRegistry(checks.Options{
 		AllowPrivateTargets: cfg.AllowPrivateTargets,
 		DefaultTimeout:      cfg.DefaultTimeout(),
 		UserAgent:           cfg.HTTPUserAgent,
 		TLSExpiryWarnDays:   cfg.TLSExpiryWarnDays,
+		HeartbeatStore:      store,
+		MultistepStore:      store,
+		BrowserStore:        store,
+		Redis:               redisClient,
+		BrowserEnabled:      cfg.BrowserCheckEnabled,
+		ICMPEnabled:         cfg.ICMPCheckEnabled,
 	})
 	notifier := notifications.NewService(store, notifications.Options{
 		AllowPrivateTargets: cfg.AllowPrivateTargets,

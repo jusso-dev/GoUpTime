@@ -7,11 +7,16 @@ type CheckStatus string
 type IncidentStatus string
 
 const (
-	MonitorHTTP    MonitorType = "http"
-	MonitorTCP     MonitorType = "tcp"
-	MonitorDNS     MonitorType = "dns"
-	MonitorTLS     MonitorType = "tls"
-	MonitorKeyword MonitorType = "keyword"
+	MonitorHTTP      MonitorType = "http"
+	MonitorTCP       MonitorType = "tcp"
+	MonitorDNS       MonitorType = "dns"
+	MonitorTLS       MonitorType = "tls"
+	MonitorKeyword   MonitorType = "keyword"
+	MonitorHeartbeat MonitorType = "heartbeat"
+	MonitorICMP      MonitorType = "icmp"
+	MonitorBrowser   MonitorType = "browser"
+	MonitorDomain    MonitorType = "domain"
+	MonitorMultistep MonitorType = "multistep"
 
 	StatusUp       CheckStatus = "up"
 	StatusDown     CheckStatus = "down"
@@ -30,8 +35,12 @@ type Monitor struct {
 	ID               string      `json:"id"`
 	OrganizationID   string      `json:"organizationId"`
 	Name             string      `json:"name" binding:"required,min=1,max=120"`
-	Type             MonitorType `json:"type" binding:"required,oneof=http tcp dns tls keyword"`
-	Target           string      `json:"target" binding:"required,min=1,max=2048"`
+	Type             MonitorType `json:"type" binding:"required,oneof=http tcp dns tls keyword heartbeat icmp browser domain multistep"`
+	// Target is required for network-based checks (HTTP/TCP/DNS/TLS/ICMP/
+	// Domain). Heartbeat, Browser, and Multistep monitors store their
+	// configuration in dedicated tables; the binding tag is intentionally
+	// loose here and the API handler enforces per-type rules.
+	Target           string      `json:"target" binding:"omitempty,max=2048"`
 	Method           string      `json:"method" binding:"omitempty,oneof=GET HEAD"`
 	ExpectedStatus   int         `json:"expectedStatus" binding:"omitempty,min=100,max=599"`
 	ExpectedKeyword  string      `json:"expectedKeyword" binding:"omitempty,max=512"`
@@ -61,6 +70,9 @@ type CheckResult struct {
 	TotalMS             int64       `json:"totalMs"`
 	ResponseSnippet     string      `json:"responseSnippet,omitempty"`
 	ConsecutiveFailures int         `json:"consecutiveFailures,omitempty"`
+	// DomainExpiresAt is populated by the Domain checker only. Nil for
+	// every other check type.
+	DomainExpiresAt *time.Time `json:"domainExpiresAt,omitempty"`
 }
 
 type Incident struct {
@@ -166,6 +178,67 @@ type MembershipDetail struct {
 	OrganizationSlug string `json:"organizationSlug"`
 	Plan             string `json:"plan"`
 	Role             string `json:"role"`
+}
+
+// Heartbeat is the per-monitor configuration for push-style (cron) checks.
+// Clients POST to /api/v1/heartbeats/:token/ping at their cadence; if a
+// ping doesn't arrive within ExpectedIntervalSeconds + GraceSeconds the
+// monitor flips to down on the next scheduler tick.
+type Heartbeat struct {
+	MonitorID                string     `json:"monitorId"`
+	TokenHash                string     `json:"-"`
+	ExpectedIntervalSeconds  int        `json:"expectedIntervalSeconds"`
+	GraceSeconds             int        `json:"graceSeconds"`
+	LastPingAt               *time.Time `json:"lastPingAt,omitempty"`
+	LastPingSourceIP         string     `json:"lastPingSourceIp,omitempty"`
+	LastPingUserAgent        string     `json:"lastPingUserAgent,omitempty"`
+	CreatedAt                time.Time  `json:"createdAt"`
+	UpdatedAt                time.Time  `json:"updatedAt"`
+}
+
+// MultistepScript holds the JSON DSL describing a sequence of HTTP
+// requests with assertions and variable extraction. See
+// internal/checks/multistep.go for the semantic.
+type MultistepScript struct {
+	MonitorID string          `json:"monitorId"`
+	Steps     MultistepSteps  `json:"steps"`
+	CreatedAt time.Time       `json:"createdAt"`
+	UpdatedAt time.Time       `json:"updatedAt"`
+}
+
+// MultistepSteps is the parsed payload of MultistepScript.Steps. Stored
+// as jsonb in Postgres but materialized to typed values for the checker.
+type MultistepSteps struct {
+	Steps []MultistepStep `json:"steps"`
+	Vars  map[string]string `json:"vars,omitempty"`
+}
+
+type MultistepStep struct {
+	Name       string            `json:"name,omitempty"`
+	Method     string            `json:"method"`
+	URL        string            `json:"url"`
+	Headers    map[string]string `json:"headers,omitempty"`
+	Body       string            `json:"body,omitempty"`
+	Assertions []MultistepAssertion `json:"assert,omitempty"`
+	Extract    map[string]string `json:"extract,omitempty"` // varName → jsonpath
+}
+
+type MultistepAssertion struct {
+	Status   int    `json:"status,omitempty"`
+	JSONPath string `json:"jsonpath,omitempty"`
+	Equals   any    `json:"equals,omitempty"`
+	Exists   *bool  `json:"exists,omitempty"`
+	Contains string `json:"contains,omitempty"`
+}
+
+// BrowserScript is the user-supplied Playwright code executed by the
+// browser-worker sidecar. The Go API stores and serves it but the actual
+// execution happens out-of-process in Node.
+type BrowserScript struct {
+	MonitorID string    `json:"monitorId"`
+	Source    string    `json:"source"`
+	CreatedAt time.Time `json:"createdAt"`
+	UpdatedAt time.Time `json:"updatedAt"`
 }
 
 // WorkerHeartbeat is the periodic liveness + state snapshot a worker
