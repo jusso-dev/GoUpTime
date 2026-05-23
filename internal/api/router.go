@@ -109,6 +109,9 @@ func NewRouter(cfg config.Config, store repository.Store, redisClient *redis.Cli
 	v1.POST("/api-keys", s.requireRole(auth.RoleAdmin), s.createAPIKey)
 	v1.GET("/api-keys", s.listAPIKeys)
 	v1.DELETE("/api-keys/:id", s.requireRole(auth.RoleAdmin), s.revokeAPIKey)
+	v1.GET("/push-devices", s.listPushDevices)
+	v1.POST("/push-devices", s.registerPushDevice)
+	v1.DELETE("/push-devices/:id", s.deletePushDevice)
 	v1.GET("/workers/status", s.workersStatus)
 	return r
 }

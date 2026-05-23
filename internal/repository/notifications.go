@@ -2,6 +2,7 @@ package repository
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 
 	"github.com/google/uuid"
@@ -11,7 +12,7 @@ import (
 	"github.com/jusso-dev/uptime/internal/models"
 )
 
-const notificationChannelColumns = `id, organization_id, name, type, url, enabled, created_at, updated_at`
+const notificationChannelColumns = `id, organization_id, name, type, url, config, enabled, created_at, updated_at`
 
 func (s *PostgresStore) ListNotificationChannels(ctx context.Context) ([]models.NotificationChannel, error) {
 	orgID, skip, err := s.tenantScope(ctx)
@@ -69,11 +70,15 @@ func (s *PostgresStore) CreateNotificationChannel(ctx context.Context, channel m
 		channel.ID = uuid.NewString()
 	}
 	channel.OrganizationID = orgID
+	configJSON, err := marshalConfig(channel.Config)
+	if err != nil {
+		return models.NotificationChannel{}, err
+	}
 	row := s.pool.QueryRow(ctx, `
-		INSERT INTO notification_channels (id, organization_id, name, type, url, enabled)
-		VALUES ($1,$2,$3,$4,$5,$6)
+		INSERT INTO notification_channels (id, organization_id, name, type, url, config, enabled)
+		VALUES ($1,$2,$3,$4,$5,$6,$7)
 		RETURNING `+notificationChannelColumns,
-		channel.ID, channel.OrganizationID, channel.Name, channel.Type, channel.URL, channel.Enabled)
+		channel.ID, channel.OrganizationID, channel.Name, channel.Type, channel.URL, configJSON, channel.Enabled)
 	c, err := scanNotificationChannel(row)
 	return c, translateError(err)
 }
@@ -86,11 +91,15 @@ func (s *PostgresStore) UpdateNotificationChannel(ctx context.Context, channel m
 	if err != nil {
 		return models.NotificationChannel{}, err
 	}
+	configJSON, err := marshalConfig(channel.Config)
+	if err != nil {
+		return models.NotificationChannel{}, err
+	}
 	row := s.pool.QueryRow(ctx, `
-		UPDATE notification_channels SET name=$3, type=$4, url=$5, enabled=$6, updated_at=now()
+		UPDATE notification_channels SET name=$3, type=$4, url=$5, config=$6, enabled=$7, updated_at=now()
 		WHERE id=$1 AND organization_id=$2
 		RETURNING `+notificationChannelColumns,
-		channel.ID, orgID, channel.Name, channel.Type, channel.URL, channel.Enabled)
+		channel.ID, orgID, channel.Name, channel.Type, channel.URL, configJSON, channel.Enabled)
 	c, err := scanNotificationChannel(row)
 	return c, translateError(err)
 }
@@ -126,6 +135,20 @@ func (s *PostgresStore) LogNotificationEvent(ctx context.Context, channelID, inc
 
 func scanNotificationChannel(row pgx.Row) (models.NotificationChannel, error) {
 	var c models.NotificationChannel
-	err := row.Scan(&c.ID, &c.OrganizationID, &c.Name, &c.Type, &c.URL, &c.Enabled, &c.CreatedAt, &c.UpdatedAt)
-	return c, err
+	var configJSON []byte
+	err := row.Scan(&c.ID, &c.OrganizationID, &c.Name, &c.Type, &c.URL, &configJSON, &c.Enabled, &c.CreatedAt, &c.UpdatedAt)
+	if err != nil {
+		return c, err
+	}
+	if len(configJSON) > 0 {
+		_ = json.Unmarshal(configJSON, &c.Config)
+	}
+	return c, nil
+}
+
+func marshalConfig(cfg map[string]any) ([]byte, error) {
+	if cfg == nil {
+		return []byte("{}"), nil
+	}
+	return json.Marshal(cfg)
 }

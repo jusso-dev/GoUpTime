@@ -94,7 +94,22 @@ func run() int {
 		MaxRetries:          cfg.WebhookMaxRetries,
 		UserAgent:           cfg.HTTPUserAgent,
 	})
-	monitorSvc := service.NewMonitoringService(store, registry, notifier, m, true)
+
+	// Provider registry for the new dispatcher: webhook, slack, push (plus
+	// stubs for email/pagerduty to be filled in later).
+	dispatcher := notifications.NewDispatcher(store, logger,
+		notifications.NewWebhookProvider(notifier),
+		notifications.NewSlackProvider(cfg.HTTPUserAgent, cfg.WebhookTimeout()),
+		notifications.NewPushProvider(store, cfg.HTTPUserAgent, cfg.ExpoAccessToken, cfg.WebhookTimeout()),
+	)
+	poller := notifications.NewPoller(dispatcher, logger)
+	go func() {
+		if err := poller.Run(ctx); err != nil && !errors.Is(err, context.Canceled) {
+			logger.Error("notification poller exited unexpectedly", "error", err)
+		}
+	}()
+
+	monitorSvc := service.NewMonitoringService(store, registry, notifier, m, true).WithDispatcher(dispatcher, cfg.AppBaseURL)
 
 	var clerkVerifier *auth.ClerkVerifier
 	if cfg.ClerkEnabled {

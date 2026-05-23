@@ -8,6 +8,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5"
+
 	"github.com/jusso-dev/uptime/internal/config"
 	"github.com/jusso-dev/uptime/internal/metrics"
 	"github.com/jusso-dev/uptime/internal/models"
@@ -156,6 +158,28 @@ func (f *fakeStore) GetBrowserScript(context.Context, string) (models.BrowserScr
 }
 func (f *fakeStore) SetBrowserScript(context.Context, models.BrowserScript) (models.BrowserScript, error) {
 	return models.BrowserScript{}, nil
+}
+func (f *fakeStore) EnqueueNotification(context.Context, models.OutboxEntry) (models.OutboxEntry, error) {
+	return models.OutboxEntry{}, nil
+}
+func (f *fakeStore) ClaimPendingNotifications(context.Context, int) ([]models.OutboxEntry, pgx.Tx, error) {
+	return nil, nil, nil
+}
+func (f *fakeStore) MarkNotificationDelivered(context.Context, pgx.Tx, string) error {
+	return nil
+}
+func (f *fakeStore) MarkNotificationRetry(context.Context, pgx.Tx, string, int, int, string, time.Time) error {
+	return nil
+}
+func (f *fakeStore) UpsertPushDevice(context.Context, models.PushDevice) (models.PushDevice, error) {
+	return models.PushDevice{}, nil
+}
+func (f *fakeStore) DeletePushDevice(context.Context, string) error { return nil }
+func (f *fakeStore) ListPushDevicesForOrg(context.Context, string) ([]models.PushDevice, error) {
+	return nil, nil
+}
+func (f *fakeStore) ListPushDevicesForUser(context.Context, string) ([]models.PushDevice, error) {
+	return nil, nil
 }
 
 // sharedMetrics is built once because metrics.New uses promauto, which

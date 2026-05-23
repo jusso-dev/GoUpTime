@@ -4,6 +4,8 @@ import (
 	"context"
 	"time"
 
+	"github.com/jackc/pgx/v5"
+
 	"github.com/jusso-dev/uptime/internal/models"
 )
 
@@ -86,4 +88,16 @@ type Store interface {
 	SetMultistepScript(ctx context.Context, script models.MultistepScript) (models.MultistepScript, error)
 	GetBrowserScript(ctx context.Context, monitorID string) (models.BrowserScript, error)
 	SetBrowserScript(ctx context.Context, script models.BrowserScript) (models.BrowserScript, error)
+
+	// Notification outbox: durable retry queue for incident dispatches.
+	EnqueueNotification(ctx context.Context, entry models.OutboxEntry) (models.OutboxEntry, error)
+	ClaimPendingNotifications(ctx context.Context, limit int) ([]models.OutboxEntry, pgx.Tx, error)
+	MarkNotificationDelivered(ctx context.Context, tx pgx.Tx, id string) error
+	MarkNotificationRetry(ctx context.Context, tx pgx.Tx, id string, attempts, maxAttempts int, lastErr string, next time.Time) error
+
+	// Mobile push device registry.
+	UpsertPushDevice(ctx context.Context, device models.PushDevice) (models.PushDevice, error)
+	DeletePushDevice(ctx context.Context, id string) error
+	ListPushDevicesForOrg(ctx context.Context, organizationID string) ([]models.PushDevice, error)
+	ListPushDevicesForUser(ctx context.Context, userID string) ([]models.PushDevice, error)
 }

@@ -15,6 +15,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5"
+
 	"github.com/jusso-dev/uptime/internal/models"
 )
 
@@ -163,6 +165,28 @@ func (r *recordingStore) GetBrowserScript(context.Context, string) (models.Brows
 }
 func (r *recordingStore) SetBrowserScript(context.Context, models.BrowserScript) (models.BrowserScript, error) {
 	return models.BrowserScript{}, nil
+}
+func (r *recordingStore) EnqueueNotification(context.Context, models.OutboxEntry) (models.OutboxEntry, error) {
+	return models.OutboxEntry{}, nil
+}
+func (r *recordingStore) ClaimPendingNotifications(context.Context, int) ([]models.OutboxEntry, pgx.Tx, error) {
+	return nil, nil, nil
+}
+func (r *recordingStore) MarkNotificationDelivered(context.Context, pgx.Tx, string) error {
+	return nil
+}
+func (r *recordingStore) MarkNotificationRetry(context.Context, pgx.Tx, string, int, int, string, time.Time) error {
+	return nil
+}
+func (r *recordingStore) UpsertPushDevice(context.Context, models.PushDevice) (models.PushDevice, error) {
+	return models.PushDevice{}, nil
+}
+func (r *recordingStore) DeletePushDevice(context.Context, string) error { return nil }
+func (r *recordingStore) ListPushDevicesForOrg(context.Context, string) ([]models.PushDevice, error) {
+	return nil, nil
+}
+func (r *recordingStore) ListPushDevicesForUser(context.Context, string) ([]models.PushDevice, error) {
+	return nil, nil
 }
 
 func TestDeliverSignsAndRecordsSuccess(t *testing.T) {

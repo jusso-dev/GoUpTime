@@ -92,9 +92,15 @@ func run() int {
 		UserAgent:           cfg.HTTPUserAgent,
 	})
 	q := queue.New(redisClient)
+	dispatcher := notifications.NewDispatcher(store, logger,
+		notifications.NewWebhookProvider(notifier),
+		notifications.NewSlackProvider(cfg.HTTPUserAgent, cfg.WebhookTimeout()),
+		notifications.NewPushProvider(store, cfg.HTTPUserAgent, cfg.ExpoAccessToken, cfg.WebhookTimeout()),
+	)
 	monitorSvc := service.NewMonitoringService(store, registry, notifier, m, true).
 		WithRegion(cfg.WorkerRegion).
-		WithQueue(q)
+		WithQueue(q).
+		WithDispatcher(dispatcher, cfg.AppBaseURL)
 	w := workerpkg.New(cfg, store, monitorSvc, m, logger)
 
 	metricsServer := &http.Server{

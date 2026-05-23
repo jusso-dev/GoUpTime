@@ -68,6 +68,11 @@ type Config struct {
 	// heartbeats, and the Redis queue it consumes from. Defaults to
 	// "default" for single-region installs.
 	WorkerRegion string
+
+	// ExpoAccessToken is an optional bearer token from
+	// https://expo.dev/accounts/[org]/settings/access-tokens that raises
+	// the per-second push rate limit. Empty is fine for low-volume sends.
+	ExpoAccessToken string
 }
 
 // IsProduction returns true when APP_ENV indicates a non-development
@@ -102,6 +107,7 @@ func Load() (Config, error) {
 		ClerkWebhookSecret:         getenv("CLERK_WEBHOOK_SECRET", ""),
 		AppBaseURL:                 strings.TrimRight(getenv("APP_BASE_URL", "http://localhost:8008"), "/"),
 		WorkerRegion:               getenv("WORKER_REGION", "default"),
+		ExpoAccessToken:            getenv("EXPO_ACCESS_TOKEN", ""),
 	}
 
 	cfg.CORSAllowedOrigins = splitCSV(getenv("CORS_ALLOWED_ORIGINS", ""))

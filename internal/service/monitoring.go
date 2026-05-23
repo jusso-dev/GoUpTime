@@ -36,6 +36,14 @@ type MonitoringService struct {
 	// to queue:results so the cross-region aggregator can confirm
 	// failures before opening incidents. nil disables publishing.
 	queueClient *queue.Client
+	// dispatcher, when set, enqueues incident events to the durable
+	// outbox in addition to the legacy direct-webhook notify.Send path.
+	// During the transition both paths run; remove notify once every
+	// channel type is a Provider.
+	dispatcher *notifications.Dispatcher
+	// appBaseURL is included in dispatched events so Slack/email/push
+	// recipients get a one-click link back to the incident page.
+	appBaseURL string
 }
 
 func NewMonitoringService(store repository.Store, checkers checks.Registry, notifier *notifications.Service, m *metrics.Metrics, persist bool) *MonitoringService {
@@ -48,6 +56,17 @@ func NewMonitoringService(store repository.Store, checkers checks.Registry, noti
 func (s *MonitoringService) WithQueue(q *queue.Client) *MonitoringService {
 	clone := *s
 	clone.queueClient = q
+	return &clone
+}
+
+// WithDispatcher returns a service variant that also enqueues incident
+// events to the notifications dispatcher (durable outbox) on opens and
+// resolves. appBaseURL is included so the recipient sees a one-click
+// deep link back to the incident.
+func (s *MonitoringService) WithDispatcher(d *notifications.Dispatcher, appBaseURL string) *MonitoringService {
+	clone := *s
+	clone.dispatcher = d
+	clone.appBaseURL = appBaseURL
 	return &clone
 }
 
@@ -190,26 +209,71 @@ func (s *MonitoringService) applyIncidentRules(ctx context.Context, monitor mode
 }
 
 func (s *MonitoringService) dispatchOpened(monitor models.Monitor, incident models.Incident) {
-	if s.notify == nil {
-		return
+	if s.notify != nil {
+		go func() {
+			ctx, cancel := context.WithTimeout(context.Background(), notificationTimeout)
+			defer cancel()
+			ctx = auth.WithSystemOrg(ctx, monitor.OrganizationID)
+			s.notify.SendIncidentOpened(ctx, monitor, incident)
+		}()
 	}
-	go func() {
-		ctx, cancel := context.WithTimeout(context.Background(), notificationTimeout)
-		defer cancel()
-		ctx = auth.WithSystemOrg(ctx, monitor.OrganizationID)
-		s.notify.SendIncidentOpened(ctx, monitor, incident)
-	}()
+	if s.dispatcher != nil {
+		go func() {
+			ctx, cancel := context.WithTimeout(context.Background(), notificationTimeout)
+			defer cancel()
+			ctx = auth.WithSystemOrg(ctx, monitor.OrganizationID)
+			if err := s.dispatcher.Enqueue(ctx, monitor.OrganizationID, incident.ID, notifications.Event{
+				Type:        "incident.opened",
+				IncidentID:  incident.ID,
+				MonitorID:   monitor.ID,
+				MonitorName: monitor.Name,
+				Status:      string(models.StatusDown),
+				Reason:      incident.Reason,
+				StartedAt:   incident.StartedAt.UTC().Format(time.RFC3339),
+				URL:         s.incidentURL(monitor.OrganizationID, incident.ID),
+			}); err != nil {
+				// Already logged inside Enqueue; the outbox still has the row.
+				_ = err
+			}
+		}()
+	}
 }
 
 func (s *MonitoringService) dispatchResolved(monitor models.Monitor, incident models.Incident) {
-	if s.notify == nil {
-		return
+	if s.notify != nil {
+		go func() {
+			ctx, cancel := context.WithTimeout(context.Background(), notificationTimeout)
+			defer cancel()
+			ctx = auth.WithSystemOrg(ctx, monitor.OrganizationID)
+			s.notify.SendIncidentResolved(ctx, monitor, incident)
+		}()
 	}
-	go func() {
-		ctx, cancel := context.WithTimeout(context.Background(), notificationTimeout)
-		defer cancel()
-		ctx = auth.WithSystemOrg(ctx, monitor.OrganizationID)
-		s.notify.SendIncidentResolved(ctx, monitor, incident)
-	}()
+	if s.dispatcher != nil {
+		go func() {
+			ctx, cancel := context.WithTimeout(context.Background(), notificationTimeout)
+			defer cancel()
+			ctx = auth.WithSystemOrg(ctx, monitor.OrganizationID)
+			resolved := ""
+			if incident.ResolvedAt != nil {
+				resolved = incident.ResolvedAt.UTC().Format(time.RFC3339)
+			}
+			_ = s.dispatcher.Enqueue(ctx, monitor.OrganizationID, incident.ID, notifications.Event{
+				Type:        "incident.resolved",
+				IncidentID:  incident.ID,
+				MonitorID:   monitor.ID,
+				MonitorName: monitor.Name,
+				Status:      string(models.StatusUp),
+				ResolvedAt:  resolved,
+				URL:         s.incidentURL(monitor.OrganizationID, incident.ID),
+			})
+		}()
+	}
+}
+
+func (s *MonitoringService) incidentURL(orgID, incidentID string) string {
+	if s.appBaseURL == "" {
+		return ""
+	}
+	return s.appBaseURL + "/orgs/" + orgID + "/incidents/" + incidentID
 }
 

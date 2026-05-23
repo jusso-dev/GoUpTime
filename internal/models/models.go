@@ -101,12 +101,47 @@ type Incident struct {
 }
 
 type NotificationChannel struct {
+	ID             string         `json:"id"`
+	OrganizationID string         `json:"organizationId"`
+	Name           string         `json:"name" binding:"required,min=1,max=120"`
+	Type           string         `json:"type" binding:"required,oneof=webhook slack email pagerduty push"`
+	// URL is kept for backwards-compat with webhook channels; new
+	// integrations carry their config in Config jsonb.
+	URL       string                 `json:"url,omitempty" binding:"omitempty,url,max=2048"`
+	Config    map[string]any         `json:"config,omitempty"`
+	Enabled   bool                   `json:"enabled"`
+	CreatedAt time.Time              `json:"createdAt"`
+	UpdatedAt time.Time              `json:"updatedAt"`
+}
+
+// PushDevice mirrors a mobile-app installation that wants incident
+// notifications. expo_token is the Expo Push token issued client-side
+// (Expo abstracts APNs/FCM); we don't ever see the underlying APNs key.
+type PushDevice struct {
 	ID             string    `json:"id"`
 	OrganizationID string    `json:"organizationId"`
-	Name           string    `json:"name" binding:"required,min=1,max=120"`
-	Type           string    `json:"type" binding:"required,oneof=webhook"`
-	URL            string    `json:"url,omitempty" binding:"required,url,max=2048"`
-	Enabled        bool      `json:"enabled"`
+	UserID         string    `json:"userId"`
+	Platform       string    `json:"platform"`
+	ExpoToken      string    `json:"expoToken"`
+	AppVersion     string    `json:"appVersion,omitempty"`
+	LastSeenAt     time.Time `json:"lastSeenAt"`
+	CreatedAt      time.Time `json:"createdAt"`
+}
+
+// OutboxEntry is a single pending or completed notification delivery.
+// Written inside the same tx as the incident state change so a crash
+// between commit and dispatch can't drop the alert.
+type OutboxEntry struct {
+	ID             string    `json:"id"`
+	OrganizationID string    `json:"organizationId"`
+	ChannelID      string    `json:"channelId,omitempty"`
+	IncidentID     string    `json:"incidentId,omitempty"`
+	EventType      string    `json:"eventType"`
+	Payload        []byte    `json:"-"`
+	Attempts       int       `json:"attempts"`
+	NextAttemptAt  time.Time `json:"nextAttemptAt"`
+	Status         string    `json:"status"`
+	LastError      string    `json:"lastError,omitempty"`
 	CreatedAt      time.Time `json:"createdAt"`
 	UpdatedAt      time.Time `json:"updatedAt"`
 }

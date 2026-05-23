@@ -4,6 +4,8 @@ import (
 	"context"
 	"time"
 
+	"github.com/jackc/pgx/v5"
+
 	"github.com/jusso-dev/uptime/internal/models"
 )
 
@@ -130,4 +132,27 @@ func (StoreNoop) GetBrowserScript(context.Context, string) (models.BrowserScript
 }
 func (StoreNoop) SetBrowserScript(context.Context, models.BrowserScript) (models.BrowserScript, error) {
 	return models.BrowserScript{}, nil
+}
+
+func (StoreNoop) EnqueueNotification(context.Context, models.OutboxEntry) (models.OutboxEntry, error) {
+	return models.OutboxEntry{}, nil
+}
+func (StoreNoop) ClaimPendingNotifications(context.Context, int) ([]models.OutboxEntry, pgx.Tx, error) {
+	return nil, nil, nil
+}
+func (StoreNoop) MarkNotificationDelivered(context.Context, pgx.Tx, string) error {
+	return nil
+}
+func (StoreNoop) MarkNotificationRetry(context.Context, pgx.Tx, string, int, int, string, time.Time) error {
+	return nil
+}
+func (StoreNoop) UpsertPushDevice(context.Context, models.PushDevice) (models.PushDevice, error) {
+	return models.PushDevice{}, nil
+}
+func (StoreNoop) DeletePushDevice(context.Context, string) error { return nil }
+func (StoreNoop) ListPushDevicesForOrg(context.Context, string) ([]models.PushDevice, error) {
+	return nil, nil
+}
+func (StoreNoop) ListPushDevicesForUser(context.Context, string) ([]models.PushDevice, error) {
+	return nil, nil
 }
