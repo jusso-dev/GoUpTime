@@ -24,8 +24,11 @@ const (
 // Monitor is the canonical synthetic-check definition. Status, CreatedAt,
 // and UpdatedAt are server-managed; clients can submit them but the API
 // layer zeroes Status on create so users cannot manufacture "up" state.
+// OrganizationID is filled in by the repository from the request principal
+// — clients cannot set it on create or update.
 type Monitor struct {
 	ID               string      `json:"id"`
+	OrganizationID   string      `json:"organizationId"`
 	Name             string      `json:"name" binding:"required,min=1,max=120"`
 	Type             MonitorType `json:"type" binding:"required,oneof=http tcp dns tls keyword"`
 	Target           string      `json:"target" binding:"required,min=1,max=2048"`
@@ -43,6 +46,7 @@ type Monitor struct {
 
 type CheckResult struct {
 	ID                  string      `json:"id"`
+	OrganizationID      string      `json:"organizationId"`
 	MonitorID           string      `json:"monitorId"`
 	Status              CheckStatus `json:"status"`
 	Success             bool        `json:"success"`
@@ -60,35 +64,40 @@ type CheckResult struct {
 }
 
 type Incident struct {
-	ID                  string         `json:"id"`
-	MonitorID           string         `json:"monitorId"`
-	Status              IncidentStatus `json:"status"`
-	StartedAt           time.Time      `json:"startedAt"`
-	ResolvedAt          *time.Time     `json:"resolvedAt,omitempty"`
-	Reason              string         `json:"reason"`
-	LastError           string         `json:"lastError,omitempty"`
-	ConsecutiveFailures int            `json:"consecutiveFailures"`
-	CreatedAt           time.Time      `json:"createdAt"`
-	UpdatedAt           time.Time      `json:"updatedAt"`
+	ID                   string         `json:"id"`
+	OrganizationID       string         `json:"organizationId"`
+	MonitorID            string         `json:"monitorId"`
+	Status               IncidentStatus `json:"status"`
+	StartedAt            time.Time      `json:"startedAt"`
+	ResolvedAt           *time.Time     `json:"resolvedAt,omitempty"`
+	AcknowledgedAt       *time.Time     `json:"acknowledgedAt,omitempty"`
+	AcknowledgedByUserID string         `json:"acknowledgedByUserId,omitempty"`
+	Reason               string         `json:"reason"`
+	LastError            string         `json:"lastError,omitempty"`
+	ConsecutiveFailures  int            `json:"consecutiveFailures"`
+	CreatedAt            time.Time      `json:"createdAt"`
+	UpdatedAt            time.Time      `json:"updatedAt"`
 }
 
 type NotificationChannel struct {
-	ID        string    `json:"id"`
-	Name      string    `json:"name" binding:"required,min=1,max=120"`
-	Type      string    `json:"type" binding:"required,oneof=webhook"`
-	URL       string    `json:"url,omitempty" binding:"required,url,max=2048"`
-	Enabled   bool      `json:"enabled"`
-	CreatedAt time.Time `json:"createdAt"`
-	UpdatedAt time.Time `json:"updatedAt"`
+	ID             string    `json:"id"`
+	OrganizationID string    `json:"organizationId"`
+	Name           string    `json:"name" binding:"required,min=1,max=120"`
+	Type           string    `json:"type" binding:"required,oneof=webhook"`
+	URL            string    `json:"url,omitempty" binding:"required,url,max=2048"`
+	Enabled        bool      `json:"enabled"`
+	CreatedAt      time.Time `json:"createdAt"`
+	UpdatedAt      time.Time `json:"updatedAt"`
 }
 
 type APIKey struct {
-	ID         string     `json:"id"`
-	Name       string     `json:"name"`
-	KeyHash    string     `json:"-"`
-	CreatedAt  time.Time  `json:"createdAt"`
-	LastUsedAt *time.Time `json:"lastUsedAt,omitempty"`
-	RevokedAt  *time.Time `json:"revokedAt,omitempty"`
+	ID             string     `json:"id"`
+	OrganizationID string     `json:"organizationId"`
+	Name           string     `json:"name"`
+	KeyHash        string     `json:"-"`
+	CreatedAt      time.Time  `json:"createdAt"`
+	LastUsedAt     *time.Time `json:"lastUsedAt,omitempty"`
+	RevokedAt      *time.Time `json:"revokedAt,omitempty"`
 }
 
 type OverviewStats struct {
@@ -109,6 +118,54 @@ type ResultFilter struct {
 	CheckedBefore *time.Time
 	Limit         int
 	Offset        int
+}
+
+// Organization represents a Clerk Organization mirrored locally so we can
+// reference org_id from FKs and enforce role checks without hitting Clerk
+// on every request. ClerkOrgID is the foreign identifier from Clerk and may
+// be empty for the seeded default org or any org created administratively.
+type Organization struct {
+	ID          string    `json:"id"`
+	ClerkOrgID  string    `json:"clerkOrgId,omitempty"`
+	Name        string    `json:"name"`
+	Slug        string    `json:"slug"`
+	Plan        string    `json:"plan"`
+	CreatedAt   time.Time `json:"createdAt"`
+	UpdatedAt   time.Time `json:"updatedAt"`
+}
+
+// User mirrors a Clerk user record. The local id is a uuid we own; the
+// ClerkUserID maps back to the source of truth for profile data.
+type User struct {
+	ID          string    `json:"id"`
+	ClerkUserID string    `json:"clerkUserId,omitempty"`
+	Email       string    `json:"email"`
+	Name        string    `json:"name"`
+	ImageURL    string    `json:"imageUrl,omitempty"`
+	CreatedAt   time.Time `json:"createdAt"`
+	UpdatedAt   time.Time `json:"updatedAt"`
+}
+
+// Membership records the relationship between a User and an Organization,
+// along with their role within that org. A user in N orgs has N membership
+// rows.
+type Membership struct {
+	OrganizationID string    `json:"organizationId"`
+	UserID         string    `json:"userId"`
+	Role           string    `json:"role"`
+	CreatedAt      time.Time `json:"createdAt"`
+	UpdatedAt      time.Time `json:"updatedAt"`
+}
+
+// MembershipDetail is a denormalized view returned by list endpoints —
+// includes the org metadata so the mobile app can render an org list in a
+// single round-trip.
+type MembershipDetail struct {
+	OrganizationID   string `json:"organizationId"`
+	OrganizationName string `json:"organizationName"`
+	OrganizationSlug string `json:"organizationSlug"`
+	Plan             string `json:"plan"`
+	Role             string `json:"role"`
 }
 
 // WorkerHeartbeat is the periodic liveness + state snapshot a worker

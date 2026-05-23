@@ -104,6 +104,37 @@ func (f *fakeStore) ListWorkerHeartbeats(context.Context, time.Time) ([]models.W
 	return nil, nil
 }
 func (f *fakeStore) DeleteWorkerHeartbeat(context.Context, string) error { return nil }
+func (f *fakeStore) AcknowledgeIncident(context.Context, string, string) (models.Incident, error) {
+	return models.Incident{}, nil
+}
+func (f *fakeStore) GetOrganization(context.Context, string) (models.Organization, error) {
+	return models.Organization{}, nil
+}
+func (f *fakeStore) GetOrganizationByClerkID(context.Context, string) (models.Organization, error) {
+	return models.Organization{}, nil
+}
+func (f *fakeStore) UpsertOrganization(context.Context, models.Organization) (models.Organization, error) {
+	return models.Organization{}, nil
+}
+func (f *fakeStore) DeleteOrganizationByClerkID(context.Context, string) error { return nil }
+func (f *fakeStore) GetUserByID(context.Context, string) (models.User, error) {
+	return models.User{}, nil
+}
+func (f *fakeStore) GetUserByClerkID(context.Context, string) (models.User, error) {
+	return models.User{}, nil
+}
+func (f *fakeStore) UpsertUser(context.Context, models.User) (models.User, error) {
+	return models.User{}, nil
+}
+func (f *fakeStore) DeleteUserByClerkID(context.Context, string) error { return nil }
+func (f *fakeStore) ListMembershipsForUser(context.Context, string) ([]models.MembershipDetail, error) {
+	return nil, nil
+}
+func (f *fakeStore) UpsertMembership(context.Context, models.Membership) error { return nil }
+func (f *fakeStore) DeleteMembership(context.Context, string, string) error    { return nil }
+func (f *fakeStore) RecordWebhookEvent(context.Context, string, string, []byte) (bool, error) {
+	return true, nil
+}
 
 // sharedMetrics is built once because metrics.New uses promauto, which
 // registers against the default registry — calling it twice would panic

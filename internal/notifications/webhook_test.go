@@ -111,6 +111,37 @@ func (r *recordingStore) ListWorkerHeartbeats(context.Context, time.Time) ([]mod
 	return nil, nil
 }
 func (r *recordingStore) DeleteWorkerHeartbeat(context.Context, string) error { return nil }
+func (r *recordingStore) AcknowledgeIncident(context.Context, string, string) (models.Incident, error) {
+	return models.Incident{}, nil
+}
+func (r *recordingStore) GetOrganization(context.Context, string) (models.Organization, error) {
+	return models.Organization{}, nil
+}
+func (r *recordingStore) GetOrganizationByClerkID(context.Context, string) (models.Organization, error) {
+	return models.Organization{}, nil
+}
+func (r *recordingStore) UpsertOrganization(context.Context, models.Organization) (models.Organization, error) {
+	return models.Organization{}, nil
+}
+func (r *recordingStore) DeleteOrganizationByClerkID(context.Context, string) error { return nil }
+func (r *recordingStore) GetUserByID(context.Context, string) (models.User, error) {
+	return models.User{}, nil
+}
+func (r *recordingStore) GetUserByClerkID(context.Context, string) (models.User, error) {
+	return models.User{}, nil
+}
+func (r *recordingStore) UpsertUser(context.Context, models.User) (models.User, error) {
+	return models.User{}, nil
+}
+func (r *recordingStore) DeleteUserByClerkID(context.Context, string) error { return nil }
+func (r *recordingStore) ListMembershipsForUser(context.Context, string) ([]models.MembershipDetail, error) {
+	return nil, nil
+}
+func (r *recordingStore) UpsertMembership(context.Context, models.Membership) error { return nil }
+func (r *recordingStore) DeleteMembership(context.Context, string, string) error    { return nil }
+func (r *recordingStore) RecordWebhookEvent(context.Context, string, string, []byte) (bool, error) {
+	return true, nil
+}
 
 func TestDeliverSignsAndRecordsSuccess(t *testing.T) {
 	secret := "shhh-this-is-secret"

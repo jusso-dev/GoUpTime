@@ -118,10 +118,10 @@ func translateError(err error) error {
 }
 
 const (
-	monitorColumns = `id, name, type, target, method, expected_status, expected_keyword,
+	monitorColumns = `id, organization_id, name, type, target, method, expected_status, expected_keyword,
 		timeout_seconds, interval_seconds, failure_threshold, enabled, status, created_at, updated_at`
 
-	checkResultColumns = `id, monitor_id, status, success, response_time_ms, status_code, error,
+	checkResultColumns = `id, organization_id, monitor_id, status, success, response_time_ms, status_code, error,
 		checked_at, dns_ms, tcp_connect_ms, tls_handshake_ms, time_to_first_byte_ms, total_ms, response_snippet`
 )
 
@@ -151,19 +151,35 @@ func normalizeMonitor(m models.Monitor) models.Monitor {
 }
 
 func (s *PostgresStore) CreateMonitor(ctx context.Context, monitor models.Monitor) (models.Monitor, error) {
+	orgID, err := s.requireOrg(ctx)
+	if err != nil {
+		return models.Monitor{}, err
+	}
 	monitor = normalizeMonitor(monitor)
+	monitor.OrganizationID = orgID
 	row := s.pool.QueryRow(ctx, `
-		INSERT INTO monitors (id, name, type, target, method, expected_status, expected_keyword, timeout_seconds, interval_seconds, failure_threshold, enabled, status)
-		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)
+		INSERT INTO monitors (id, organization_id, name, type, target, method, expected_status, expected_keyword, timeout_seconds, interval_seconds, failure_threshold, enabled, status)
+		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)
 		RETURNING `+monitorColumns,
-		monitor.ID, monitor.Name, monitor.Type, monitor.Target, monitor.Method, monitor.ExpectedStatus, monitor.ExpectedKeyword,
+		monitor.ID, monitor.OrganizationID, monitor.Name, monitor.Type, monitor.Target, monitor.Method, monitor.ExpectedStatus, monitor.ExpectedKeyword,
 		monitor.TimeoutSeconds, monitor.IntervalSeconds, monitor.FailureThreshold, monitor.Enabled, monitor.Status)
 	m, err := scanMonitor(row)
 	return m, translateError(err)
 }
 
 func (s *PostgresStore) ListMonitors(ctx context.Context) ([]models.Monitor, error) {
-	rows, err := s.pool.Query(ctx, `SELECT `+monitorColumns+` FROM monitors ORDER BY created_at DESC`)
+	orgID, skip, err := s.tenantScope(ctx)
+	if err != nil {
+		return nil, err
+	}
+	query := `SELECT ` + monitorColumns + ` FROM monitors`
+	args := []any{}
+	if !skip {
+		query += ` WHERE organization_id = $1`
+		args = append(args, orgID)
+	}
+	query += ` ORDER BY created_at DESC`
+	rows, err := s.pool.Query(ctx, query, args...)
 	if err != nil {
 		return nil, translateError(err)
 	}
@@ -172,8 +188,22 @@ func (s *PostgresStore) ListMonitors(ctx context.Context) ([]models.Monitor, err
 	return monitors, translateError(err)
 }
 
+// ListEnabledMonitors is always called by the worker scheduler and therefore
+// crosses tenants. Callers must use auth.WithSystem(ctx) — the tenancy
+// scope helper enforces this by allowing skip only for system actors.
 func (s *PostgresStore) ListEnabledMonitors(ctx context.Context) ([]models.Monitor, error) {
-	rows, err := s.pool.Query(ctx, `SELECT `+monitorColumns+` FROM monitors WHERE enabled = true ORDER BY created_at`)
+	orgID, skip, err := s.tenantScope(ctx)
+	if err != nil {
+		return nil, err
+	}
+	query := `SELECT ` + monitorColumns + ` FROM monitors WHERE enabled = true`
+	args := []any{}
+	if !skip {
+		query += ` AND organization_id = $1`
+		args = append(args, orgID)
+	}
+	query += ` ORDER BY created_at`
+	rows, err := s.pool.Query(ctx, query, args...)
 	if err != nil {
 		return nil, translateError(err)
 	}
@@ -186,7 +216,17 @@ func (s *PostgresStore) GetMonitor(ctx context.Context, id string) (models.Monit
 	if id == "" {
 		return models.Monitor{}, fmt.Errorf("%w: monitor id is required", apierr.ErrInvalidInput)
 	}
-	row := s.pool.QueryRow(ctx, `SELECT `+monitorColumns+` FROM monitors WHERE id = $1`, id)
+	orgID, skip, err := s.tenantScope(ctx)
+	if err != nil {
+		return models.Monitor{}, err
+	}
+	query := `SELECT ` + monitorColumns + ` FROM monitors WHERE id = $1`
+	args := []any{id}
+	if !skip {
+		query += ` AND organization_id = $2`
+		args = append(args, orgID)
+	}
+	row := s.pool.QueryRow(ctx, query, args...)
 	m, err := scanMonitor(row)
 	return m, translateError(err)
 }
@@ -195,14 +235,18 @@ func (s *PostgresStore) UpdateMonitor(ctx context.Context, monitor models.Monito
 	if monitor.ID == "" {
 		return models.Monitor{}, fmt.Errorf("%w: monitor id is required", apierr.ErrInvalidInput)
 	}
+	orgID, err := s.requireOrg(ctx)
+	if err != nil {
+		return models.Monitor{}, err
+	}
 	monitor = normalizeMonitor(monitor)
 	row := s.pool.QueryRow(ctx, `
 		UPDATE monitors
-		SET name=$2, type=$3, target=$4, method=$5, expected_status=$6, expected_keyword=$7, timeout_seconds=$8,
-		    interval_seconds=$9, failure_threshold=$10, enabled=$11, updated_at=now()
-		WHERE id=$1
+		SET name=$3, type=$4, target=$5, method=$6, expected_status=$7, expected_keyword=$8, timeout_seconds=$9,
+		    interval_seconds=$10, failure_threshold=$11, enabled=$12, updated_at=now()
+		WHERE id=$1 AND organization_id=$2
 		RETURNING `+monitorColumns,
-		monitor.ID, monitor.Name, monitor.Type, monitor.Target, monitor.Method, monitor.ExpectedStatus, monitor.ExpectedKeyword,
+		monitor.ID, orgID, monitor.Name, monitor.Type, monitor.Target, monitor.Method, monitor.ExpectedStatus, monitor.ExpectedKeyword,
 		monitor.TimeoutSeconds, monitor.IntervalSeconds, monitor.FailureThreshold, monitor.Enabled)
 	m, err := scanMonitor(row)
 	return m, translateError(err)
@@ -212,7 +256,11 @@ func (s *PostgresStore) DeleteMonitor(ctx context.Context, id string) error {
 	if id == "" {
 		return fmt.Errorf("%w: monitor id is required", apierr.ErrInvalidInput)
 	}
-	tag, err := s.pool.Exec(ctx, `DELETE FROM monitors WHERE id=$1`, id)
+	orgID, err := s.requireOrg(ctx)
+	if err != nil {
+		return err
+	}
+	tag, err := s.pool.Exec(ctx, `DELETE FROM monitors WHERE id=$1 AND organization_id=$2`, id, orgID)
 	if err != nil {
 		return translateError(err)
 	}
@@ -226,7 +274,17 @@ func (s *PostgresStore) UpdateMonitorStatus(ctx context.Context, id string, stat
 	if id == "" {
 		return fmt.Errorf("%w: monitor id is required", apierr.ErrInvalidInput)
 	}
-	_, err := s.pool.Exec(ctx, `UPDATE monitors SET status=$2, updated_at=now() WHERE id=$1`, id, status)
+	orgID, skip, err := s.tenantScope(ctx)
+	if err != nil {
+		return err
+	}
+	query := `UPDATE monitors SET status=$2, updated_at=now() WHERE id=$1`
+	args := []any{id, status}
+	if !skip {
+		query += ` AND organization_id=$3`
+		args = append(args, orgID)
+	}
+	_, err = s.pool.Exec(ctx, query, args...)
 	return translateError(err)
 }
 
@@ -237,11 +295,21 @@ func (s *PostgresStore) CreateCheckResult(ctx context.Context, result models.Che
 	if result.CheckedAt.IsZero() {
 		result.CheckedAt = time.Now().UTC()
 	}
+	if result.OrganizationID == "" {
+		// Fall back to the principal's org if the caller didn't set it
+		// explicitly — happens when the service layer doesn't know which
+		// monitor the result belongs to (rare).
+		orgID, err := s.requireOrg(ctx)
+		if err != nil {
+			return models.CheckResult{}, err
+		}
+		result.OrganizationID = orgID
+	}
 	row := s.pool.QueryRow(ctx, `
 		INSERT INTO check_results (`+checkResultColumns+`)
-		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)
+		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15)
 		RETURNING `+checkResultColumns,
-		result.ID, result.MonitorID, result.Status, result.Success, result.ResponseTimeMS, result.StatusCode, result.Error,
+		result.ID, result.OrganizationID, result.MonitorID, result.Status, result.Success, result.ResponseTimeMS, result.StatusCode, result.Error,
 		result.CheckedAt, result.DNSMS, result.TCPConnectMS, result.TLSHandshakeMS, result.TimeToFirstByteMS, result.TotalMS, result.ResponseSnippet)
 	r, err := scanCheckResult(row)
 	return r, translateError(err)
@@ -252,9 +320,17 @@ func (s *PostgresStore) ListCheckResults(ctx context.Context, filter models.Resu
 	if limit <= 0 || limit > 500 {
 		limit = 100
 	}
+	orgID, skip, err := s.tenantScope(ctx)
+	if err != nil {
+		return nil, err
+	}
 	query := `SELECT ` + checkResultColumns + ` FROM check_results`
 	args := []any{}
 	clauses := []string{}
+	if !skip {
+		args = append(args, orgID)
+		clauses = append(clauses, fmt.Sprintf("organization_id=$%d", len(args)))
+	}
 	if filter.MonitorID != "" {
 		args = append(args, filter.MonitorID)
 		clauses = append(clauses, fmt.Sprintf("monitor_id=$%d", len(args)))
@@ -294,7 +370,9 @@ func (s *PostgresStore) ListCheckResults(ctx context.Context, filter models.Resu
 
 // CountConsecutiveFailures walks back through recent check results until it
 // hits a success. A small limit (50) bounds the work and is sufficient for
-// any realistic failure_threshold.
+// any realistic failure_threshold. Filtering by monitor_id implicitly
+// scopes results to the monitor's org (check_results.monitor_id is a FK)
+// so no explicit org filter is needed here.
 func (s *PostgresStore) CountConsecutiveFailures(ctx context.Context, monitorID string) (int, error) {
 	if monitorID == "" {
 		return 0, fmt.Errorf("%w: monitor id is required", apierr.ErrInvalidInput)
@@ -320,7 +398,7 @@ func (s *PostgresStore) CountConsecutiveFailures(ctx context.Context, monitorID 
 
 func scanMonitor(row pgx.Row) (models.Monitor, error) {
 	var m models.Monitor
-	err := row.Scan(&m.ID, &m.Name, &m.Type, &m.Target, &m.Method, &m.ExpectedStatus, &m.ExpectedKeyword, &m.TimeoutSeconds,
+	err := row.Scan(&m.ID, &m.OrganizationID, &m.Name, &m.Type, &m.Target, &m.Method, &m.ExpectedStatus, &m.ExpectedKeyword, &m.TimeoutSeconds,
 		&m.IntervalSeconds, &m.FailureThreshold, &m.Enabled, &m.Status, &m.CreatedAt, &m.UpdatedAt)
 	return m, err
 }
@@ -339,7 +417,7 @@ func scanMonitors(rows pgx.Rows) ([]models.Monitor, error) {
 
 func scanCheckResult(row pgx.Row) (models.CheckResult, error) {
 	var r models.CheckResult
-	err := row.Scan(&r.ID, &r.MonitorID, &r.Status, &r.Success, &r.ResponseTimeMS, &r.StatusCode, &r.Error, &r.CheckedAt,
+	err := row.Scan(&r.ID, &r.OrganizationID, &r.MonitorID, &r.Status, &r.Success, &r.ResponseTimeMS, &r.StatusCode, &r.Error, &r.CheckedAt,
 		&r.DNSMS, &r.TCPConnectMS, &r.TLSHandshakeMS, &r.TimeToFirstByteMS, &r.TotalMS, &r.ResponseSnippet)
 	return r, err
 }

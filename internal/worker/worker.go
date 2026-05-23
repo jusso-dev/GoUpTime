@@ -18,6 +18,7 @@ import (
 
 	"github.com/google/uuid"
 
+	"github.com/jusso-dev/uptime/internal/auth"
 	"github.com/jusso-dev/uptime/internal/config"
 	"github.com/jusso-dev/uptime/internal/metrics"
 	"github.com/jusso-dev/uptime/internal/models"
@@ -199,7 +200,10 @@ func (w *Worker) snapshotInFlight() []string {
 // random startup delay so a hundred reboots don't all hammer their targets
 // at the same wall-clock moment.
 func (w *Worker) enqueueDue(ctx context.Context) {
-	monitors, err := w.store.ListEnabledMonitors(ctx)
+	// Scheduling reads monitors across every organization, so use a system
+	// context — the repository would otherwise reject the call as missing
+	// tenant scope.
+	monitors, err := w.store.ListEnabledMonitors(auth.WithSystem(ctx))
 	if err != nil {
 		w.logger.Error("scheduler: load enabled monitors", "error", err)
 		return
@@ -251,6 +255,10 @@ func (w *Worker) consume(ctx context.Context, workerID int) {
 }
 
 func (w *Worker) runOne(ctx context.Context, workerID int, monitor models.Monitor) {
+	// MonitoringService will switch to a per-org context once it knows
+	// which monitor it's checking; we start in system scope so the read
+	// (and any incident lookups before the switch) work.
+	ctx = auth.WithSystem(ctx)
 	w.inFlight.Store(monitor.ID, struct{}{})
 	defer w.inFlight.Delete(monitor.ID)
 	w.metrics.WorkerActive.Inc()

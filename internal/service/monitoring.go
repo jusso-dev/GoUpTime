@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/jusso-dev/uptime/internal/auth"
 	"github.com/jusso-dev/uptime/internal/checks"
 	"github.com/jusso-dev/uptime/internal/metrics"
 	"github.com/jusso-dev/uptime/internal/models"
@@ -60,11 +61,19 @@ func (s *MonitoringService) RunCheck(ctx context.Context, monitor models.Monitor
 	if !s.persist || monitor.ID == "" || s.store == nil {
 		return result, checkErr
 	}
-	saved, err := s.store.CreateCheckResult(ctx, result)
+	// Pin the store context to the monitor's organization so the repository
+	// inserts the check result and any derived incident under the correct
+	// tenant — regardless of who originated the surrounding request.
+	storeCtx := ctx
+	if monitor.OrganizationID != "" {
+		storeCtx = auth.WithSystemOrg(ctx, monitor.OrganizationID)
+	}
+	result.OrganizationID = monitor.OrganizationID
+	saved, err := s.store.CreateCheckResult(storeCtx, result)
 	if err != nil {
 		return result, fmt.Errorf("store check result: %w", err)
 	}
-	if err := s.applyIncidentRules(ctx, monitor, saved); err != nil {
+	if err := s.applyIncidentRules(storeCtx, monitor, saved); err != nil {
 		return saved, err
 	}
 	return saved, checkErr
@@ -118,6 +127,7 @@ func (s *MonitoringService) applyIncidentRules(ctx context.Context, monitor mode
 		reason = "monitor check failed"
 	}
 	incident, err := s.store.OpenIncident(ctx, models.Incident{
+		OrganizationID:      monitor.OrganizationID,
 		MonitorID:           monitor.ID,
 		Status:              models.IncidentOpen,
 		StartedAt:           time.Now().UTC(),
@@ -139,6 +149,7 @@ func (s *MonitoringService) dispatchOpened(monitor models.Monitor, incident mode
 	go func() {
 		ctx, cancel := context.WithTimeout(context.Background(), notificationTimeout)
 		defer cancel()
+		ctx = auth.WithSystemOrg(ctx, monitor.OrganizationID)
 		s.notify.SendIncidentOpened(ctx, monitor, incident)
 	}()
 }
@@ -150,6 +161,7 @@ func (s *MonitoringService) dispatchResolved(monitor models.Monitor, incident mo
 	go func() {
 		ctx, cancel := context.WithTimeout(context.Background(), notificationTimeout)
 		defer cancel()
+		ctx = auth.WithSystemOrg(ctx, monitor.OrganizationID)
 		s.notify.SendIncidentResolved(ctx, monitor, incident)
 	}()
 }

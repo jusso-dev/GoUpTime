@@ -72,3 +72,39 @@ func (StoreNoop) ListWorkerHeartbeats(context.Context, time.Time) ([]models.Work
 	return nil, nil
 }
 func (StoreNoop) DeleteWorkerHeartbeat(context.Context, string) error { return nil }
+
+func (StoreNoop) AcknowledgeIncident(context.Context, string, string) (models.Incident, error) {
+	return models.Incident{}, nil
+}
+
+func (StoreNoop) GetOrganization(context.Context, string) (models.Organization, error) {
+	return models.Organization{}, nil
+}
+func (StoreNoop) GetOrganizationByClerkID(context.Context, string) (models.Organization, error) {
+	return models.Organization{}, nil
+}
+func (StoreNoop) UpsertOrganization(context.Context, models.Organization) (models.Organization, error) {
+	return models.Organization{}, nil
+}
+func (StoreNoop) DeleteOrganizationByClerkID(context.Context, string) error { return nil }
+
+func (StoreNoop) GetUserByID(context.Context, string) (models.User, error) {
+	return models.User{}, nil
+}
+func (StoreNoop) GetUserByClerkID(context.Context, string) (models.User, error) {
+	return models.User{}, nil
+}
+func (StoreNoop) UpsertUser(context.Context, models.User) (models.User, error) {
+	return models.User{}, nil
+}
+func (StoreNoop) DeleteUserByClerkID(context.Context, string) error { return nil }
+
+func (StoreNoop) ListMembershipsForUser(context.Context, string) ([]models.MembershipDetail, error) {
+	return nil, nil
+}
+func (StoreNoop) UpsertMembership(context.Context, models.Membership) error { return nil }
+func (StoreNoop) DeleteMembership(context.Context, string, string) error    { return nil }
+
+func (StoreNoop) RecordWebhookEvent(context.Context, string, string, []byte) (bool, error) {
+	return true, nil
+}

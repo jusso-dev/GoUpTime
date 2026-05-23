@@ -21,6 +21,7 @@ import (
 	"github.com/redis/go-redis/v9"
 
 	"github.com/jusso-dev/uptime/internal/api"
+	"github.com/jusso-dev/uptime/internal/auth"
 	"github.com/jusso-dev/uptime/internal/checks"
 	"github.com/jusso-dev/uptime/internal/config"
 	"github.com/jusso-dev/uptime/internal/metrics"
@@ -88,7 +89,22 @@ func run() int {
 		UserAgent:           cfg.HTTPUserAgent,
 	})
 	monitorSvc := service.NewMonitoringService(store, registry, notifier, m, true)
-	router := api.NewRouter(cfg, store, redisClient, monitorSvc, m, logger)
+
+	var clerkVerifier *auth.ClerkVerifier
+	if cfg.ClerkEnabled {
+		// Fetching JWKS on startup is best-effort: if the network is flaky
+		// the keyfunc loader retries lazily. We log but don't fail boot so
+		// a brief Clerk outage doesn't take the API down.
+		v, err := auth.NewClerkVerifier(ctx, cfg.ClerkIssuer)
+		if err != nil {
+			logger.Error("clerk verifier init failed; continuing without clerk auth", "error", err)
+		} else {
+			clerkVerifier = v
+			logger.Info("clerk auth enabled", "issuer", cfg.ClerkIssuer)
+		}
+	}
+
+	router := api.NewRouter(cfg, store, redisClient, monitorSvc, m, logger, clerkVerifier)
 
 	server := &http.Server{
 		Addr:              cfg.Addr(),
