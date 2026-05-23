@@ -219,6 +219,21 @@ func (r *recordingStore) DeleteMaintenanceWindow(context.Context, string) error 
 func (r *recordingStore) IsMonitorInMaintenance(context.Context, string, time.Time) (bool, error) {
 	return false, nil
 }
+func (r *recordingStore) ListTags(context.Context) ([]models.Tag, error) { return nil, nil }
+func (r *recordingStore) CreateTag(context.Context, models.Tag) (models.Tag, error) {
+	return models.Tag{}, nil
+}
+func (r *recordingStore) DeleteTag(context.Context, string) error                { return nil }
+func (r *recordingStore) SetMonitorTags(context.Context, string, []string) error { return nil }
+func (r *recordingStore) ListMonitorsByTags(context.Context, []string) ([]models.Monitor, error) {
+	return nil, nil
+}
+func (r *recordingStore) SLAReportForMonitor(context.Context, string, time.Time, time.Time) (models.SLAReport, error) {
+	return models.SLAReport{}, nil
+}
+func (r *recordingStore) SLAReportForOrg(context.Context, time.Time, time.Time) (models.SLAReport, error) {
+	return models.SLAReport{}, nil
+}
 
 func TestDeliverSignsAndRecordsSuccess(t *testing.T) {
 	secret := "shhh-this-is-secret"

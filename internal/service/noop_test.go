@@ -188,3 +188,17 @@ func (StoreNoop) DeleteMaintenanceWindow(context.Context, string) error { return
 func (StoreNoop) IsMonitorInMaintenance(context.Context, string, time.Time) (bool, error) {
 	return false, nil
 }
+
+func (StoreNoop) ListTags(context.Context) ([]models.Tag, error)               { return nil, nil }
+func (StoreNoop) CreateTag(context.Context, models.Tag) (models.Tag, error)    { return models.Tag{}, nil }
+func (StoreNoop) DeleteTag(context.Context, string) error                      { return nil }
+func (StoreNoop) SetMonitorTags(context.Context, string, []string) error       { return nil }
+func (StoreNoop) ListMonitorsByTags(context.Context, []string) ([]models.Monitor, error) {
+	return nil, nil
+}
+func (StoreNoop) SLAReportForMonitor(context.Context, string, time.Time, time.Time) (models.SLAReport, error) {
+	return models.SLAReport{}, nil
+}
+func (StoreNoop) SLAReportForOrg(context.Context, time.Time, time.Time) (models.SLAReport, error) {
+	return models.SLAReport{}, nil
+}

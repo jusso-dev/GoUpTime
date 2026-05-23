@@ -212,6 +212,21 @@ func (f *fakeStore) DeleteMaintenanceWindow(context.Context, string) error { ret
 func (f *fakeStore) IsMonitorInMaintenance(context.Context, string, time.Time) (bool, error) {
 	return false, nil
 }
+func (f *fakeStore) ListTags(context.Context) ([]models.Tag, error) { return nil, nil }
+func (f *fakeStore) CreateTag(context.Context, models.Tag) (models.Tag, error) {
+	return models.Tag{}, nil
+}
+func (f *fakeStore) DeleteTag(context.Context, string) error                { return nil }
+func (f *fakeStore) SetMonitorTags(context.Context, string, []string) error { return nil }
+func (f *fakeStore) ListMonitorsByTags(context.Context, []string) ([]models.Monitor, error) {
+	return nil, nil
+}
+func (f *fakeStore) SLAReportForMonitor(context.Context, string, time.Time, time.Time) (models.SLAReport, error) {
+	return models.SLAReport{}, nil
+}
+func (f *fakeStore) SLAReportForOrg(context.Context, time.Time, time.Time) (models.SLAReport, error) {
+	return models.SLAReport{}, nil
+}
 
 // sharedMetrics is built once because metrics.New uses promauto, which
 // registers against the default registry — calling it twice would panic

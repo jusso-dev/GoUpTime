@@ -337,6 +337,32 @@ type MaintenanceWindow struct {
 	UpdatedAt          time.Time  `json:"updatedAt"`
 }
 
+// Tag is a user-defined label that can be attached to monitors. Tag
+// names are unique per organization. The color is purely cosmetic; the
+// UI uses it for the pill background.
+type Tag struct {
+	ID             string    `json:"id"`
+	OrganizationID string    `json:"organizationId"`
+	Name           string    `json:"name"`
+	Color          string    `json:"color"`
+	CreatedAt      time.Time `json:"createdAt"`
+}
+
+// SLAReport is the response shape of the /api/v1/sla/* endpoints.
+// MaintenanceSeconds is subtracted from RawDownSeconds to produce
+// BillableDownSeconds, which is what most SLA contracts measure.
+type SLAReport struct {
+	MonitorID             string    `json:"monitorId,omitempty"`
+	Period                string    `json:"period"`
+	From                  time.Time `json:"from"`
+	To                    time.Time `json:"to"`
+	UptimePercentage      float64   `json:"uptimePercentage"`
+	RawDownSeconds        int64     `json:"rawDownSeconds"`
+	MaintenanceSeconds    int64     `json:"maintenanceSeconds"`
+	BillableDownSeconds   int64     `json:"billableDownSeconds"`
+	IncidentCount         int       `json:"incidents"`
+}
+
 // WorkerHeartbeat is the periodic liveness + state snapshot a worker
 // process writes to the database so the API can surface a "what's running
 // right now" view without sharing memory across processes.

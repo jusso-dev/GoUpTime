@@ -117,4 +117,15 @@ type Store interface {
 	CreateMaintenanceWindow(ctx context.Context, w models.MaintenanceWindow) (models.MaintenanceWindow, error)
 	DeleteMaintenanceWindow(ctx context.Context, id string) error
 	IsMonitorInMaintenance(ctx context.Context, monitorID string, at time.Time) (bool, error)
+
+	// Tags.
+	ListTags(ctx context.Context) ([]models.Tag, error)
+	CreateTag(ctx context.Context, t models.Tag) (models.Tag, error)
+	DeleteTag(ctx context.Context, id string) error
+	SetMonitorTags(ctx context.Context, monitorID string, tagIDs []string) error
+	ListMonitorsByTags(ctx context.Context, names []string) ([]models.Monitor, error)
+
+	// SLA reports.
+	SLAReportForMonitor(ctx context.Context, monitorID string, from, to time.Time) (models.SLAReport, error)
+	SLAReportForOrg(ctx context.Context, from, to time.Time) (models.SLAReport, error)
 }

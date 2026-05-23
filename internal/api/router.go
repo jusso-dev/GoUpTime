@@ -87,7 +87,7 @@ func NewRouter(cfg config.Config, store repository.Store, redisClient *redis.Cli
 	v1.GET("/me", s.me)
 	v1.GET("/organizations", s.listOrganizations)
 	v1.POST("/check", s.manualCheck)
-	v1.GET("/monitors", s.listMonitors)
+	v1.GET("/monitors", s.listMonitorsFiltered)
 	v1.POST("/monitors", s.requireRole(auth.RoleMember), s.createMonitor)
 	v1.GET("/monitors/:id", s.getMonitor)
 	v1.PUT("/monitors/:id", s.requireRole(auth.RoleMember), s.updateMonitor)
@@ -131,6 +131,16 @@ func NewRouter(cfg config.Config, store repository.Store, redisClient *redis.Cli
 	v1.GET("/maintenance-windows", s.listMaintenanceWindows)
 	v1.POST("/maintenance-windows", s.requireRole(auth.RoleMember), s.createMaintenanceWindow)
 	v1.DELETE("/maintenance-windows/:id", s.requireRole(auth.RoleMember), s.deleteMaintenanceWindow)
+
+	// Tags.
+	v1.GET("/tags", s.listTags)
+	v1.POST("/tags", s.requireRole(auth.RoleMember), s.createTag)
+	v1.DELETE("/tags/:id", s.requireRole(auth.RoleMember), s.deleteTag)
+	v1.PUT("/monitors/:id/tags", s.requireRole(auth.RoleMember), s.setMonitorTags)
+
+	// SLA reports.
+	v1.GET("/sla/monitors/:id", s.slaForMonitor)
+	v1.GET("/sla/organization", s.slaForOrg)
 
 	v1.GET("/workers/status", s.workersStatus)
 	return r
