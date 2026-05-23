@@ -223,6 +223,12 @@ func (w *Worker) enqueueDue(ctx context.Context) {
 		if _, running := w.inFlight.Load(monitor.ID); running {
 			continue
 		}
+		// Suppress checks during an active maintenance window. Skipping
+		// here (rather than running the check and marking the result as
+		// "expected") keeps check_results clean and saves outbound bandwidth.
+		if active, err := w.store.IsMonitorInMaintenance(auth.WithSystem(ctx), monitor.ID, now); err == nil && active {
+			continue
+		}
 		due, seen := w.nextRun[monitor.ID]
 		if seen && now.Before(due) {
 			continue

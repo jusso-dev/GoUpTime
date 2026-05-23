@@ -1,0 +1,122 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>{{.Page.Name}} — Status</title>
+<style>
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    background: #f6f8fa;
+    color: #1f2328;
+    line-height: 1.5;
+  }
+  .container { max-width: 880px; margin: 0 auto; padding: 32px 24px; }
+  header { padding-bottom: 24px; border-bottom: 1px solid #d0d7de; margin-bottom: 24px; }
+  h1 { margin: 0 0 4px; font-size: 28px; }
+  .description { color: #57606a; margin: 0; }
+  .overall {
+    margin: 24px 0;
+    padding: 18px 22px;
+    border-radius: 12px;
+    color: #fff;
+    font-weight: 600;
+    font-size: 18px;
+  }
+  .overall.up { background: #1a7f37; }
+  .overall.degraded { background: #bf8700; }
+  .overall.down { background: #cf222e; }
+  .component {
+    background: #fff;
+    border: 1px solid #d0d7de;
+    border-radius: 8px;
+    padding: 16px 20px;
+    margin-bottom: 12px;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+  }
+  .component-name { font-weight: 600; }
+  .component-desc { color: #57606a; font-size: 14px; margin-top: 2px; }
+  .status-pill {
+    font-size: 13px;
+    font-weight: 600;
+    padding: 4px 10px;
+    border-radius: 999px;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+  }
+  .pill-up { background: #d4f4dd; color: #1a7f37; }
+  .pill-degraded { background: #fff1c2; color: #855700; }
+  .pill-down { background: #ffd9d8; color: #a40e26; }
+  .pill-unknown { background: #eaeef2; color: #57606a; }
+  .group-heading {
+    margin: 24px 0 8px;
+    font-size: 12px;
+    text-transform: uppercase;
+    color: #57606a;
+    letter-spacing: 0.06em;
+  }
+  footer {
+    color: #57606a;
+    font-size: 13px;
+    text-align: center;
+    margin-top: 48px;
+    padding-top: 16px;
+    border-top: 1px solid #d0d7de;
+  }
+  .banner {
+    background: #fff8c5;
+    border: 1px solid #d4a72c;
+    border-radius: 8px;
+    padding: 12px 16px;
+    margin: 16px 0;
+    color: #54470a;
+  }
+</style>
+</head>
+<body>
+<div class="container">
+  <header>
+    <h1>{{.Page.Name}}</h1>
+    {{if .Page.Description}}<p class="description">{{.Page.Description}}</p>{{end}}
+  </header>
+
+  {{if .ActiveMaintenance}}
+  <div class="banner">
+    <strong>Scheduled maintenance in progress</strong>
+    {{range .ActiveMaintenance}}<div>{{.Name}} — ends {{.EndsAt.Format "Jan 2, 15:04 MST"}}</div>{{end}}
+  </div>
+  {{end}}
+
+  <div class="overall {{.OverallClass}}">
+    {{.OverallLabel}}
+  </div>
+
+  {{if .Components}}
+    {{$lastGroup := ""}}
+    {{range .Components}}
+      {{if and .GroupName (ne .GroupName $lastGroup)}}
+        <div class="group-heading">{{.GroupName}}</div>
+        {{$lastGroup = .GroupName}}
+      {{end}}
+      <div class="component">
+        <div>
+          <div class="component-name">{{.Name}}</div>
+          {{if .Description}}<div class="component-desc">{{.Description}}</div>{{end}}
+        </div>
+        <span class="status-pill pill-{{.StatusClass}}">{{.StatusLabel}}</span>
+      </div>
+    {{end}}
+  {{else}}
+    <p class="description">No components configured yet.</p>
+  {{end}}
+
+  <footer>
+    Powered by GoUpTime · Updated {{.GeneratedAt.Format "Jan 2, 15:04 MST"}}
+  </footer>
+</div>
+</body>
+</html>

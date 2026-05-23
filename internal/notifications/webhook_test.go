@@ -188,6 +188,37 @@ func (r *recordingStore) ListPushDevicesForOrg(context.Context, string) ([]model
 func (r *recordingStore) ListPushDevicesForUser(context.Context, string) ([]models.PushDevice, error) {
 	return nil, nil
 }
+func (r *recordingStore) ListStatusPages(context.Context) ([]models.StatusPage, error) { return nil, nil }
+func (r *recordingStore) CreateStatusPage(context.Context, models.StatusPage) (models.StatusPage, error) {
+	return models.StatusPage{}, nil
+}
+func (r *recordingStore) GetStatusPageBySlug(context.Context, string) (models.StatusPage, error) {
+	return models.StatusPage{}, nil
+}
+func (r *recordingStore) GetStatusPageByDomain(context.Context, string) (models.StatusPage, error) {
+	return models.StatusPage{}, nil
+}
+func (r *recordingStore) DeleteStatusPage(context.Context, string) error { return nil }
+func (r *recordingStore) ListStatusPageComponents(context.Context, string) ([]models.StatusPageComponent, error) {
+	return nil, nil
+}
+func (r *recordingStore) UpsertStatusPageComponent(context.Context, models.StatusPageComponent) (models.StatusPageComponent, error) {
+	return models.StatusPageComponent{}, nil
+}
+func (r *recordingStore) DeleteStatusPageComponent(context.Context, string) error { return nil }
+func (r *recordingStore) GetMonitorsByIDs(context.Context, string, []string) ([]models.Monitor, error) {
+	return nil, nil
+}
+func (r *recordingStore) ListMaintenanceWindows(context.Context) ([]models.MaintenanceWindow, error) {
+	return nil, nil
+}
+func (r *recordingStore) CreateMaintenanceWindow(context.Context, models.MaintenanceWindow) (models.MaintenanceWindow, error) {
+	return models.MaintenanceWindow{}, nil
+}
+func (r *recordingStore) DeleteMaintenanceWindow(context.Context, string) error { return nil }
+func (r *recordingStore) IsMonitorInMaintenance(context.Context, string, time.Time) (bool, error) {
+	return false, nil
+}
 
 func TestDeliverSignsAndRecordsSuccess(t *testing.T) {
 	secret := "shhh-this-is-secret"

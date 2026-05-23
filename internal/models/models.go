@@ -285,6 +285,58 @@ type BrowserScript struct {
 	UpdatedAt time.Time `json:"updatedAt"`
 }
 
+// StatusPage is the public-facing status surface for one organization.
+// Multiple status pages per org are allowed (e.g. customer-facing vs
+// internal). slug serves the hosted /s/:slug; custom_domain is used by
+// the host-header middleware when a CNAME points at the API.
+type StatusPage struct {
+	ID                   string         `json:"id"`
+	OrganizationID       string         `json:"organizationId"`
+	Slug                 string         `json:"slug"`
+	Name                 string         `json:"name"`
+	Description          string         `json:"description,omitempty"`
+	CustomDomain         string         `json:"customDomain,omitempty"`
+	CustomDomainVerified bool           `json:"customDomainVerified"`
+	Theme                map[string]any `json:"theme,omitempty"`
+	Published            bool           `json:"published"`
+	CreatedAt            time.Time      `json:"createdAt"`
+	UpdatedAt            time.Time      `json:"updatedAt"`
+}
+
+// StatusPageComponent groups monitors into a single visual unit on the
+// page (e.g. "API", "Web App"). The component's status is the worst
+// status across its constituent monitors.
+type StatusPageComponent struct {
+	ID           string    `json:"id"`
+	StatusPageID string    `json:"statusPageId"`
+	Name         string    `json:"name"`
+	Description  string    `json:"description,omitempty"`
+	Position     int       `json:"position"`
+	MonitorIDs   []string  `json:"monitorIds"`
+	GroupName    string    `json:"groupName,omitempty"`
+	CreatedAt    time.Time `json:"createdAt"`
+	UpdatedAt    time.Time `json:"updatedAt"`
+}
+
+// MaintenanceWindow declares a span when checks should be suppressed.
+// recurrence_rrule is an RFC 5545 RRULE string for repeating windows
+// (e.g. "FREQ=WEEKLY;BYDAY=TU"). status_page_id, when set, surfaces a
+// banner on the named status page during the window.
+type MaintenanceWindow struct {
+	ID                 string     `json:"id"`
+	OrganizationID     string     `json:"organizationId"`
+	Name               string     `json:"name"`
+	Description        string     `json:"description,omitempty"`
+	StartsAt           time.Time  `json:"startsAt"`
+	EndsAt             time.Time  `json:"endsAt"`
+	RecurrenceRRule    string     `json:"recurrenceRrule,omitempty"`
+	StatusPageID       string     `json:"statusPageId,omitempty"`
+	CreatedByUserID    string     `json:"createdByUserId,omitempty"`
+	MonitorIDs         []string   `json:"monitorIds"`
+	CreatedAt          time.Time  `json:"createdAt"`
+	UpdatedAt          time.Time  `json:"updatedAt"`
+}
+
 // WorkerHeartbeat is the periodic liveness + state snapshot a worker
 // process writes to the database so the API can surface a "what's running
 // right now" view without sharing memory across processes.

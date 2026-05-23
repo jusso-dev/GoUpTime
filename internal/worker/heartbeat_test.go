@@ -181,6 +181,37 @@ func (f *fakeStore) ListPushDevicesForOrg(context.Context, string) ([]models.Pus
 func (f *fakeStore) ListPushDevicesForUser(context.Context, string) ([]models.PushDevice, error) {
 	return nil, nil
 }
+func (f *fakeStore) ListStatusPages(context.Context) ([]models.StatusPage, error) { return nil, nil }
+func (f *fakeStore) CreateStatusPage(context.Context, models.StatusPage) (models.StatusPage, error) {
+	return models.StatusPage{}, nil
+}
+func (f *fakeStore) GetStatusPageBySlug(context.Context, string) (models.StatusPage, error) {
+	return models.StatusPage{}, nil
+}
+func (f *fakeStore) GetStatusPageByDomain(context.Context, string) (models.StatusPage, error) {
+	return models.StatusPage{}, nil
+}
+func (f *fakeStore) DeleteStatusPage(context.Context, string) error { return nil }
+func (f *fakeStore) ListStatusPageComponents(context.Context, string) ([]models.StatusPageComponent, error) {
+	return nil, nil
+}
+func (f *fakeStore) UpsertStatusPageComponent(context.Context, models.StatusPageComponent) (models.StatusPageComponent, error) {
+	return models.StatusPageComponent{}, nil
+}
+func (f *fakeStore) DeleteStatusPageComponent(context.Context, string) error { return nil }
+func (f *fakeStore) GetMonitorsByIDs(context.Context, string, []string) ([]models.Monitor, error) {
+	return nil, nil
+}
+func (f *fakeStore) ListMaintenanceWindows(context.Context) ([]models.MaintenanceWindow, error) {
+	return nil, nil
+}
+func (f *fakeStore) CreateMaintenanceWindow(context.Context, models.MaintenanceWindow) (models.MaintenanceWindow, error) {
+	return models.MaintenanceWindow{}, nil
+}
+func (f *fakeStore) DeleteMaintenanceWindow(context.Context, string) error { return nil }
+func (f *fakeStore) IsMonitorInMaintenance(context.Context, string, time.Time) (bool, error) {
+	return false, nil
+}
 
 // sharedMetrics is built once because metrics.New uses promauto, which
 // registers against the default registry — calling it twice would panic

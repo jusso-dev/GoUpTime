@@ -156,3 +156,35 @@ func (StoreNoop) ListPushDevicesForOrg(context.Context, string) ([]models.PushDe
 func (StoreNoop) ListPushDevicesForUser(context.Context, string) ([]models.PushDevice, error) {
 	return nil, nil
 }
+
+func (StoreNoop) ListStatusPages(context.Context) ([]models.StatusPage, error) { return nil, nil }
+func (StoreNoop) CreateStatusPage(context.Context, models.StatusPage) (models.StatusPage, error) {
+	return models.StatusPage{}, nil
+}
+func (StoreNoop) GetStatusPageBySlug(context.Context, string) (models.StatusPage, error) {
+	return models.StatusPage{}, nil
+}
+func (StoreNoop) GetStatusPageByDomain(context.Context, string) (models.StatusPage, error) {
+	return models.StatusPage{}, nil
+}
+func (StoreNoop) DeleteStatusPage(context.Context, string) error { return nil }
+func (StoreNoop) ListStatusPageComponents(context.Context, string) ([]models.StatusPageComponent, error) {
+	return nil, nil
+}
+func (StoreNoop) UpsertStatusPageComponent(context.Context, models.StatusPageComponent) (models.StatusPageComponent, error) {
+	return models.StatusPageComponent{}, nil
+}
+func (StoreNoop) DeleteStatusPageComponent(context.Context, string) error { return nil }
+func (StoreNoop) GetMonitorsByIDs(context.Context, string, []string) ([]models.Monitor, error) {
+	return nil, nil
+}
+func (StoreNoop) ListMaintenanceWindows(context.Context) ([]models.MaintenanceWindow, error) {
+	return nil, nil
+}
+func (StoreNoop) CreateMaintenanceWindow(context.Context, models.MaintenanceWindow) (models.MaintenanceWindow, error) {
+	return models.MaintenanceWindow{}, nil
+}
+func (StoreNoop) DeleteMaintenanceWindow(context.Context, string) error { return nil }
+func (StoreNoop) IsMonitorInMaintenance(context.Context, string, time.Time) (bool, error) {
+	return false, nil
+}

@@ -100,4 +100,21 @@ type Store interface {
 	DeletePushDevice(ctx context.Context, id string) error
 	ListPushDevicesForOrg(ctx context.Context, organizationID string) ([]models.PushDevice, error)
 	ListPushDevicesForUser(ctx context.Context, userID string) ([]models.PushDevice, error)
+
+	// Public status pages.
+	ListStatusPages(ctx context.Context) ([]models.StatusPage, error)
+	CreateStatusPage(ctx context.Context, page models.StatusPage) (models.StatusPage, error)
+	GetStatusPageBySlug(ctx context.Context, slug string) (models.StatusPage, error)
+	GetStatusPageByDomain(ctx context.Context, domain string) (models.StatusPage, error)
+	DeleteStatusPage(ctx context.Context, id string) error
+	ListStatusPageComponents(ctx context.Context, pageID string) ([]models.StatusPageComponent, error)
+	UpsertStatusPageComponent(ctx context.Context, c models.StatusPageComponent) (models.StatusPageComponent, error)
+	DeleteStatusPageComponent(ctx context.Context, id string) error
+	GetMonitorsByIDs(ctx context.Context, organizationID string, ids []string) ([]models.Monitor, error)
+
+	// Maintenance windows.
+	ListMaintenanceWindows(ctx context.Context) ([]models.MaintenanceWindow, error)
+	CreateMaintenanceWindow(ctx context.Context, w models.MaintenanceWindow) (models.MaintenanceWindow, error)
+	DeleteMaintenanceWindow(ctx context.Context, id string) error
+	IsMonitorInMaintenance(ctx context.Context, monitorID string, at time.Time) (bool, error)
 }

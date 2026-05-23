@@ -69,6 +69,12 @@ func NewRouter(cfg config.Config, store repository.Store, redisClient *redis.Cli
 	// `curl https://.../ping` from a cron entry works without flags.
 	r.POST("/api/v1/heartbeats/:token/ping", s.heartbeatPing)
 	r.GET("/api/v1/heartbeats/:token/ping", s.heartbeatPing)
+
+	// Public status page routes. Both slug-based and custom-domain
+	// (host-header based) reach the same handler; the lookup resolves
+	// which one based on what the request carries.
+	r.GET("/s/:slug", s.publicStatusPage)
+	r.GET("/s/:slug/api/summary.json", s.publicStatusPageJSON)
 	// Operator-facing dashboard. The HTML is unauthenticated; it prompts
 	// the user for an API key client-side and uses it for the protected
 	// /api/v1/workers/status XHR. This matches the rest of the API.
@@ -112,6 +118,20 @@ func NewRouter(cfg config.Config, store repository.Store, redisClient *redis.Cli
 	v1.GET("/push-devices", s.listPushDevices)
 	v1.POST("/push-devices", s.registerPushDevice)
 	v1.DELETE("/push-devices/:id", s.deletePushDevice)
+
+	// Status page management.
+	v1.GET("/status-pages", s.listStatusPages)
+	v1.POST("/status-pages", s.requireRole(auth.RoleAdmin), s.createStatusPage)
+	v1.DELETE("/status-pages/:id", s.requireRole(auth.RoleAdmin), s.deleteStatusPage)
+	v1.GET("/status-pages/:id/components", s.listStatusPageComponents)
+	v1.PUT("/status-pages/:id/components", s.requireRole(auth.RoleMember), s.upsertStatusPageComponent)
+	v1.DELETE("/status-pages/:id/components/:componentId", s.requireRole(auth.RoleMember), s.deleteStatusPageComponent)
+
+	// Maintenance windows.
+	v1.GET("/maintenance-windows", s.listMaintenanceWindows)
+	v1.POST("/maintenance-windows", s.requireRole(auth.RoleMember), s.createMaintenanceWindow)
+	v1.DELETE("/maintenance-windows/:id", s.requireRole(auth.RoleMember), s.deleteMaintenanceWindow)
+
 	v1.GET("/workers/status", s.workersStatus)
 	return r
 }
