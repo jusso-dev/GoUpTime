@@ -63,6 +63,11 @@ type Config struct {
 	// heartbeat ping URLs and incident deep links surfaced to integrations
 	// (Slack, email).
 	AppBaseURL string
+
+	// WorkerRegion is the label this worker process attaches to results,
+	// heartbeats, and the Redis queue it consumes from. Defaults to
+	// "default" for single-region installs.
+	WorkerRegion string
 }
 
 // IsProduction returns true when APP_ENV indicates a non-development
@@ -96,6 +101,7 @@ func Load() (Config, error) {
 		ClerkPublishableKey:        getenv("CLERK_PUBLISHABLE_KEY", ""),
 		ClerkWebhookSecret:         getenv("CLERK_WEBHOOK_SECRET", ""),
 		AppBaseURL:                 strings.TrimRight(getenv("APP_BASE_URL", "http://localhost:8008"), "/"),
+		WorkerRegion:               getenv("WORKER_REGION", "default"),
 	}
 
 	cfg.CORSAllowedOrigins = splitCSV(getenv("CORS_ALLOWED_ORIGINS", ""))

@@ -169,6 +169,7 @@ func (w *Worker) writeHeartbeat(ctx context.Context) error {
 		InstanceID:    w.instanceID,
 		Hostname:      w.hostname,
 		Version:       w.cfg.Version,
+		Region:        w.cfg.WorkerRegion,
 		StartedAt:     w.startedAt,
 		LastSeenAt:    time.Now().UTC(),
 		WorkerCount:   w.cfg.CheckWorkerCount,
@@ -209,7 +210,16 @@ func (w *Worker) enqueueDue(ctx context.Context) {
 		return
 	}
 	now := time.Now()
+	region := w.cfg.WorkerRegion
+	if region == "" {
+		region = "default"
+	}
 	for _, monitor := range monitors {
+		// In a multi-region deployment a monitor lists which regions
+		// should run it; skip the ones we're not responsible for.
+		if !regionMatches(monitor.Regions, region) {
+			continue
+		}
 		if _, running := w.inFlight.Load(monitor.ID); running {
 			continue
 		}
@@ -305,6 +315,22 @@ func (w *Worker) runOne(ctx context.Context, workerID int, monitor models.Monito
 		"queued_ms", time.Since(start).Milliseconds()-result.TotalMS,
 		"error", result.Error,
 	)
+}
+
+// regionMatches reports whether the monitor's region list includes
+// region. A nil or empty regions slice falls back to "default" so
+// monitors created before the multi-region migration continue to run
+// in single-region installs.
+func regionMatches(regions []string, region string) bool {
+	if len(regions) == 0 {
+		return region == "default"
+	}
+	for _, r := range regions {
+		if r == region {
+			return true
+		}
+	}
+	return false
 }
 
 // jitter returns a uniformly-distributed offset in the range

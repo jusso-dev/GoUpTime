@@ -119,10 +119,11 @@ func translateError(err error) error {
 
 const (
 	monitorColumns = `id, organization_id, name, type, target, method, expected_status, expected_keyword,
-		timeout_seconds, interval_seconds, failure_threshold, enabled, status, created_at, updated_at`
+		timeout_seconds, interval_seconds, failure_threshold, enabled, status, regions,
+		region_confirmation_threshold, created_at, updated_at`
 
 	checkResultColumns = `id, organization_id, monitor_id, status, success, response_time_ms, status_code, error,
-		checked_at, dns_ms, tcp_connect_ms, tls_handshake_ms, time_to_first_byte_ms, total_ms, response_snippet, domain_expires_at`
+		checked_at, dns_ms, tcp_connect_ms, tls_handshake_ms, time_to_first_byte_ms, total_ms, response_snippet, domain_expires_at, region`
 )
 
 func normalizeMonitor(m models.Monitor) models.Monitor {
@@ -147,6 +148,17 @@ func normalizeMonitor(m models.Monitor) models.Monitor {
 	if m.Status == "" {
 		m.Status = models.StatusDegraded
 	}
+	if len(m.Regions) == 0 {
+		m.Regions = []string{"default"}
+	}
+	if m.RegionConfirmationThreshold <= 0 {
+		m.RegionConfirmationThreshold = 1
+	}
+	// A confirmation threshold larger than the region count is meaningless
+	// (impossible to satisfy); clamp it to the number of configured regions.
+	if m.RegionConfirmationThreshold > len(m.Regions) {
+		m.RegionConfirmationThreshold = len(m.Regions)
+	}
 	return m
 }
 
@@ -158,11 +170,11 @@ func (s *PostgresStore) CreateMonitor(ctx context.Context, monitor models.Monito
 	monitor = normalizeMonitor(monitor)
 	monitor.OrganizationID = orgID
 	row := s.pool.QueryRow(ctx, `
-		INSERT INTO monitors (id, organization_id, name, type, target, method, expected_status, expected_keyword, timeout_seconds, interval_seconds, failure_threshold, enabled, status)
-		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)
+		INSERT INTO monitors (id, organization_id, name, type, target, method, expected_status, expected_keyword, timeout_seconds, interval_seconds, failure_threshold, enabled, status, regions, region_confirmation_threshold)
+		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15)
 		RETURNING `+monitorColumns,
 		monitor.ID, monitor.OrganizationID, monitor.Name, monitor.Type, monitor.Target, monitor.Method, monitor.ExpectedStatus, monitor.ExpectedKeyword,
-		monitor.TimeoutSeconds, monitor.IntervalSeconds, monitor.FailureThreshold, monitor.Enabled, monitor.Status)
+		monitor.TimeoutSeconds, monitor.IntervalSeconds, monitor.FailureThreshold, monitor.Enabled, monitor.Status, monitor.Regions, monitor.RegionConfirmationThreshold)
 	m, err := scanMonitor(row)
 	return m, translateError(err)
 }
@@ -243,11 +255,13 @@ func (s *PostgresStore) UpdateMonitor(ctx context.Context, monitor models.Monito
 	row := s.pool.QueryRow(ctx, `
 		UPDATE monitors
 		SET name=$3, type=$4, target=$5, method=$6, expected_status=$7, expected_keyword=$8, timeout_seconds=$9,
-		    interval_seconds=$10, failure_threshold=$11, enabled=$12, updated_at=now()
+		    interval_seconds=$10, failure_threshold=$11, enabled=$12, regions=$13,
+		    region_confirmation_threshold=$14, updated_at=now()
 		WHERE id=$1 AND organization_id=$2
 		RETURNING `+monitorColumns,
 		monitor.ID, orgID, monitor.Name, monitor.Type, monitor.Target, monitor.Method, monitor.ExpectedStatus, monitor.ExpectedKeyword,
-		monitor.TimeoutSeconds, monitor.IntervalSeconds, monitor.FailureThreshold, monitor.Enabled)
+		monitor.TimeoutSeconds, monitor.IntervalSeconds, monitor.FailureThreshold, monitor.Enabled,
+		monitor.Regions, monitor.RegionConfirmationThreshold)
 	m, err := scanMonitor(row)
 	return m, translateError(err)
 }
@@ -305,12 +319,15 @@ func (s *PostgresStore) CreateCheckResult(ctx context.Context, result models.Che
 		}
 		result.OrganizationID = orgID
 	}
+	if result.Region == "" {
+		result.Region = "default"
+	}
 	row := s.pool.QueryRow(ctx, `
 		INSERT INTO check_results (`+checkResultColumns+`)
-		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16)
+		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17)
 		RETURNING `+checkResultColumns,
 		result.ID, result.OrganizationID, result.MonitorID, result.Status, result.Success, result.ResponseTimeMS, result.StatusCode, result.Error,
-		result.CheckedAt, result.DNSMS, result.TCPConnectMS, result.TLSHandshakeMS, result.TimeToFirstByteMS, result.TotalMS, result.ResponseSnippet, result.DomainExpiresAt)
+		result.CheckedAt, result.DNSMS, result.TCPConnectMS, result.TLSHandshakeMS, result.TimeToFirstByteMS, result.TotalMS, result.ResponseSnippet, result.DomainExpiresAt, result.Region)
 	r, err := scanCheckResult(row)
 	return r, translateError(err)
 }
@@ -399,7 +416,7 @@ func (s *PostgresStore) CountConsecutiveFailures(ctx context.Context, monitorID 
 func scanMonitor(row pgx.Row) (models.Monitor, error) {
 	var m models.Monitor
 	err := row.Scan(&m.ID, &m.OrganizationID, &m.Name, &m.Type, &m.Target, &m.Method, &m.ExpectedStatus, &m.ExpectedKeyword, &m.TimeoutSeconds,
-		&m.IntervalSeconds, &m.FailureThreshold, &m.Enabled, &m.Status, &m.CreatedAt, &m.UpdatedAt)
+		&m.IntervalSeconds, &m.FailureThreshold, &m.Enabled, &m.Status, &m.Regions, &m.RegionConfirmationThreshold, &m.CreatedAt, &m.UpdatedAt)
 	return m, err
 }
 
@@ -418,6 +435,6 @@ func scanMonitors(rows pgx.Rows) ([]models.Monitor, error) {
 func scanCheckResult(row pgx.Row) (models.CheckResult, error) {
 	var r models.CheckResult
 	err := row.Scan(&r.ID, &r.OrganizationID, &r.MonitorID, &r.Status, &r.Success, &r.ResponseTimeMS, &r.StatusCode, &r.Error, &r.CheckedAt,
-		&r.DNSMS, &r.TCPConnectMS, &r.TLSHandshakeMS, &r.TimeToFirstByteMS, &r.TotalMS, &r.ResponseSnippet, &r.DomainExpiresAt)
+		&r.DNSMS, &r.TCPConnectMS, &r.TLSHandshakeMS, &r.TimeToFirstByteMS, &r.TotalMS, &r.ResponseSnippet, &r.DomainExpiresAt, &r.Region)
 	return r, err
 }

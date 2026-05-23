@@ -49,8 +49,14 @@ type Monitor struct {
 	FailureThreshold int         `json:"failureThreshold" binding:"omitempty,min=1,max=100"`
 	Enabled          bool        `json:"enabled"`
 	Status           CheckStatus `json:"status"`
-	CreatedAt        time.Time   `json:"createdAt"`
-	UpdatedAt        time.Time   `json:"updatedAt"`
+	// Regions lists the worker regions that should execute this monitor.
+	// Empty defaults to ["default"]. RegionConfirmationThreshold sets the
+	// minimum number of regions that must agree on a failure before an
+	// incident opens — kills false positives from a single flaky vantage.
+	Regions                      []string `json:"regions,omitempty"`
+	RegionConfirmationThreshold  int      `json:"regionConfirmationThreshold,omitempty"`
+	CreatedAt                    time.Time `json:"createdAt"`
+	UpdatedAt                    time.Time `json:"updatedAt"`
 }
 
 type CheckResult struct {
@@ -73,6 +79,9 @@ type CheckResult struct {
 	// DomainExpiresAt is populated by the Domain checker only. Nil for
 	// every other check type.
 	DomainExpiresAt *time.Time `json:"domainExpiresAt,omitempty"`
+	// Region records which worker vantage produced this result. Defaults
+	// to "default" for single-region deployments.
+	Region string `json:"region,omitempty"`
 }
 
 type Incident struct {
@@ -253,6 +262,7 @@ type WorkerHeartbeat struct {
 	InstanceID     string    `json:"instanceId"`
 	Hostname       string    `json:"hostname"`
 	Version        string    `json:"version"`
+	Region         string    `json:"region,omitempty"`
 	StartedAt      time.Time `json:"startedAt"`
 	LastSeenAt     time.Time `json:"lastSeenAt"`
 	WorkerCount    int       `json:"workerCount"`

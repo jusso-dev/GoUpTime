@@ -12,7 +12,7 @@ import (
 	"github.com/jusso-dev/uptime/internal/models"
 )
 
-const workerHeartbeatColumns = `instance_id, hostname, version, started_at, last_seen_at,
+const workerHeartbeatColumns = `instance_id, hostname, version, region, started_at, last_seen_at,
 	worker_count, active_jobs, queue_depth, queue_capacity, jobs_completed, jobs_failed, in_flight`
 
 // UpsertWorkerHeartbeat inserts a fresh row for the calling worker or
@@ -32,12 +32,16 @@ func (s *PostgresStore) UpsertWorkerHeartbeat(ctx context.Context, hb models.Wor
 	if hb.LastSeenAt.IsZero() {
 		hb.LastSeenAt = time.Now().UTC()
 	}
+	if hb.Region == "" {
+		hb.Region = "default"
+	}
 	_, err = s.pool.Exec(ctx, `
 		INSERT INTO worker_heartbeats (`+workerHeartbeatColumns+`)
-		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)
+		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)
 		ON CONFLICT (instance_id) DO UPDATE SET
 			hostname        = EXCLUDED.hostname,
 			version         = EXCLUDED.version,
+			region          = EXCLUDED.region,
 			last_seen_at    = EXCLUDED.last_seen_at,
 			worker_count    = EXCLUDED.worker_count,
 			active_jobs     = EXCLUDED.active_jobs,
@@ -46,7 +50,7 @@ func (s *PostgresStore) UpsertWorkerHeartbeat(ctx context.Context, hb models.Wor
 			jobs_completed  = EXCLUDED.jobs_completed,
 			jobs_failed     = EXCLUDED.jobs_failed,
 			in_flight       = EXCLUDED.in_flight`,
-		hb.InstanceID, hb.Hostname, hb.Version, hb.StartedAt, hb.LastSeenAt,
+		hb.InstanceID, hb.Hostname, hb.Version, hb.Region, hb.StartedAt, hb.LastSeenAt,
 		hb.WorkerCount, hb.ActiveJobs, hb.QueueDepth, hb.QueueCapacity,
 		hb.JobsCompleted, hb.JobsFailed, inFlightJSON)
 	return translateError(err)
@@ -96,7 +100,7 @@ func scanWorkerHeartbeat(row pgx.Row) (models.WorkerHeartbeat, error) {
 	var hb models.WorkerHeartbeat
 	var inFlightJSON []byte
 	err := row.Scan(
-		&hb.InstanceID, &hb.Hostname, &hb.Version, &hb.StartedAt, &hb.LastSeenAt,
+		&hb.InstanceID, &hb.Hostname, &hb.Version, &hb.Region, &hb.StartedAt, &hb.LastSeenAt,
 		&hb.WorkerCount, &hb.ActiveJobs, &hb.QueueDepth, &hb.QueueCapacity,
 		&hb.JobsCompleted, &hb.JobsFailed, &inFlightJSON,
 	)

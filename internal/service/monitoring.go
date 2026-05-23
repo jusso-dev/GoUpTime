@@ -14,6 +14,7 @@ import (
 	"github.com/jusso-dev/uptime/internal/metrics"
 	"github.com/jusso-dev/uptime/internal/models"
 	"github.com/jusso-dev/uptime/internal/notifications"
+	"github.com/jusso-dev/uptime/internal/queue"
 	"github.com/jusso-dev/uptime/internal/repository"
 )
 
@@ -28,10 +29,38 @@ type MonitoringService struct {
 	notify   *notifications.Service
 	metrics  *metrics.Metrics
 	persist  bool
+	// region tags every persisted check_result with the worker vantage
+	// that produced it. Defaults to "default" when unset.
+	region string
+	// queueClient, when set, lets the worker publish per-region results
+	// to queue:results so the cross-region aggregator can confirm
+	// failures before opening incidents. nil disables publishing.
+	queueClient *queue.Client
 }
 
 func NewMonitoringService(store repository.Store, checkers checks.Registry, notifier *notifications.Service, m *metrics.Metrics, persist bool) *MonitoringService {
-	return &MonitoringService{store: store, checkers: checkers, notify: notifier, metrics: m, persist: persist}
+	return &MonitoringService{store: store, checkers: checkers, notify: notifier, metrics: m, persist: persist, region: "default"}
+}
+
+// WithQueue returns a service variant that publishes each completed
+// check result to the supplied Redis queue. Used by the worker so the
+// scheduler-side aggregator can fold per-region verdicts.
+func (s *MonitoringService) WithQueue(q *queue.Client) *MonitoringService {
+	clone := *s
+	clone.queueClient = q
+	return &clone
+}
+
+// WithRegion returns the service tagging every result with the given
+// region label. Used by the worker entry-point to stamp WORKER_REGION
+// onto every persisted check_result for cross-region aggregation later.
+func (s *MonitoringService) WithRegion(region string) *MonitoringService {
+	if region == "" {
+		region = "default"
+	}
+	clone := *s
+	clone.region = region
+	return &clone
 }
 
 // RunCheck executes a single check, persists the result (if configured), and
@@ -69,9 +98,27 @@ func (s *MonitoringService) RunCheck(ctx context.Context, monitor models.Monitor
 		storeCtx = auth.WithSystemOrg(ctx, monitor.OrganizationID)
 	}
 	result.OrganizationID = monitor.OrganizationID
+	if result.Region == "" {
+		result.Region = s.region
+	}
 	saved, err := s.store.CreateCheckResult(storeCtx, result)
 	if err != nil {
 		return result, fmt.Errorf("store check result: %w", err)
+	}
+	// Publish a lightweight verdict so the cross-region aggregator can
+	// fold this result into its rolling window. Failure here is logged
+	// but does not abort the check — Redis being down should never
+	// hurt monitoring availability.
+	if s.queueClient != nil && s.queueClient.Available() {
+		_ = s.queueClient.PublishResult(storeCtx, queue.Result{
+			MonitorID:      saved.MonitorID,
+			OrganizationID: saved.OrganizationID,
+			Region:         saved.Region,
+			Success:        saved.Success,
+			Status:         string(saved.Status),
+			Error:          saved.Error,
+			CheckedAt:      saved.CheckedAt,
+		})
 	}
 	if err := s.applyIncidentRules(storeCtx, monitor, saved); err != nil {
 		return saved, err

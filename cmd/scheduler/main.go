@@ -1,10 +1,16 @@
-// Command uptime-worker runs the scheduler and check execution pool.
+// Command uptime-scheduler runs the leader-elected dispatcher that
+// pushes due monitor checks onto per-region Redis queues. It also
+// hosts the cross-region aggregator that listens to results and
+// confirms failures across the configured regions.
+//
+// Run one replica per process; only one wins the lock. The rest stand
+// by and take over within leaderTTL (~10s) if the leader dies.
 //
 // Exit codes:
 //
-//	0 — clean shutdown after SIGINT/SIGTERM
-//	1 — startup failure (config, db)
-//	2 — runtime failure (worker or metrics server died unexpectedly)
+//	0 — clean shutdown
+//	1 — startup failure (config, db, redis)
+//	2 — runtime failure (scheduler or aggregator died unexpectedly)
 package main
 
 import (
@@ -26,8 +32,8 @@ import (
 	"github.com/jusso-dev/uptime/internal/notifications"
 	"github.com/jusso-dev/uptime/internal/queue"
 	"github.com/jusso-dev/uptime/internal/repository"
+	"github.com/jusso-dev/uptime/internal/scheduler"
 	"github.com/jusso-dev/uptime/internal/service"
-	workerpkg "github.com/jusso-dev/uptime/internal/worker"
 )
 
 func main() {
@@ -45,7 +51,7 @@ func run() int {
 		return 1
 	}
 	logger := slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{Level: cfg.LogLevel})).
-		With("component", "worker", "env", cfg.AppEnv, "version", cfg.Version)
+		With("component", "scheduler", "env", cfg.AppEnv, "version", cfg.Version)
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
@@ -56,22 +62,22 @@ func run() int {
 		return 1
 	}
 	defer pool.Close()
-
 	store := repository.NewPostgresStore(pool)
-	m := metrics.New()
 
-	// Redis is optional for the worker today (browser-check submission is
-	// the only consumer). If the URL is unreachable the worker still runs
-	// every non-browser check type — browser monitors will simply report
-	// "queue unavailable" until Redis is back.
-	var redisClient *redis.Client
-	if opts, err := redis.ParseURL(cfg.RedisURL); err == nil {
-		redisClient = redis.NewClient(opts)
-		defer redisClient.Close()
-	} else {
-		logger.Warn("redis url invalid; browser checks disabled", "error", err)
+	redisOpts, err := redis.ParseURL(cfg.RedisURL)
+	if err != nil {
+		logger.Error("redis url invalid", "error", err)
+		return 1
 	}
+	redisClient := redis.NewClient(redisOpts)
+	defer redisClient.Close()
+	q := queue.New(redisClient)
 
+	m := metrics.New()
+	// The aggregator needs a monitoring service so it can call back into
+	// the existing incident-rule path. Notifier shares the API's webhook
+	// dispatch since the scheduler is the natural single source of truth
+	// for cross-region incident state.
 	registry := checks.NewRegistry(checks.Options{
 		AllowPrivateTargets: cfg.AllowPrivateTargets,
 		DefaultTimeout:      cfg.DefaultTimeout(),
@@ -91,11 +97,10 @@ func run() int {
 		MaxRetries:          cfg.WebhookMaxRetries,
 		UserAgent:           cfg.HTTPUserAgent,
 	})
-	q := queue.New(redisClient)
-	monitorSvc := service.NewMonitoringService(store, registry, notifier, m, true).
-		WithRegion(cfg.WorkerRegion).
-		WithQueue(q)
-	w := workerpkg.New(cfg, store, monitorSvc, m, logger)
+	monitorSvc := service.NewMonitoringService(store, registry, notifier, m, true)
+
+	sched := scheduler.New(cfg, store, q, logger)
+	agg := scheduler.NewAggregator(store, q, monitorSvc, logger)
 
 	metricsServer := &http.Server{
 		Addr:              cfg.MetricsAddr(),
@@ -103,10 +108,7 @@ func run() int {
 		ReadHeaderTimeout: 5 * time.Second,
 		ErrorLog:          slog.NewLogLogger(logger.Handler(), slog.LevelError),
 	}
-
 	metricsErr := make(chan error, 1)
-	workerErr := make(chan error, 1)
-
 	go func() {
 		logger.Info("metrics listening", "addr", cfg.MetricsAddr())
 		if err := metricsServer.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
@@ -114,11 +116,20 @@ func run() int {
 		}
 		close(metricsErr)
 	}()
+
+	schedErr := make(chan error, 1)
+	aggErr := make(chan error, 1)
 	go func() {
-		if err := w.Run(ctx); err != nil && !errors.Is(err, context.Canceled) {
-			workerErr <- err
+		if err := sched.Run(ctx); err != nil && !errors.Is(err, context.Canceled) {
+			schedErr <- err
 		}
-		close(workerErr)
+		close(schedErr)
+	}()
+	go func() {
+		if err := agg.Run(ctx); err != nil && !errors.Is(err, context.Canceled) {
+			aggErr <- err
+		}
+		close(aggErr)
 	}()
 
 	exitCode := 0
@@ -131,9 +142,15 @@ func run() int {
 			exitCode = 2
 			stop()
 		}
-	case err, ok := <-workerErr:
+	case err, ok := <-schedErr:
 		if ok && err != nil {
-			logger.Error("worker crashed", "error", err)
+			logger.Error("scheduler crashed", "error", err)
+			exitCode = 2
+			stop()
+		}
+	case err, ok := <-aggErr:
+		if ok && err != nil {
+			logger.Error("aggregator crashed", "error", err)
 			exitCode = 2
 			stop()
 		}
@@ -145,10 +162,6 @@ func run() int {
 		logger.Error("metrics shutdown failed", "error", err)
 		_ = metricsServer.Close()
 	}
-	// Wait for worker to drain.
-	if err, ok := <-workerErr; ok && err != nil {
-		logger.Error("worker exited with error", "error", err)
-	}
-	logger.Info("worker stopped")
+	logger.Info("scheduler stopped")
 	return exitCode
 }

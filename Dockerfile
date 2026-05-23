@@ -24,6 +24,8 @@ RUN --mount=type=cache,target=/root/.cache/go-build \
     CGO_ENABLED=0 GOOS=linux \
     go build -trimpath -ldflags "-s -w -X main.version=${VERSION}" -o /out/uptime-worker ./cmd/worker && \
     CGO_ENABLED=0 GOOS=linux \
+    go build -trimpath -ldflags "-s -w -X main.version=${VERSION}" -o /out/uptime-scheduler ./cmd/scheduler && \
+    CGO_ENABLED=0 GOOS=linux \
     go build -trimpath -ldflags "-s -w -X main.version=${VERSION}" -o /out/uptime-migrate ./cmd/migrate
 
 # ---- runtime stage -------------------------------------------------------
@@ -35,7 +37,7 @@ RUN apk add --no-cache ca-certificates tzdata && \
     addgroup -S -g 65532 uptime && \
     adduser  -S -u 65532 -G uptime uptime
 
-COPY --from=build /out/uptime-api /out/uptime-worker /out/uptime-migrate /app/
+COPY --from=build /out/uptime-api /out/uptime-worker /out/uptime-scheduler /out/uptime-migrate /app/
 COPY migrations /app/migrations
 
 USER 65532:65532
