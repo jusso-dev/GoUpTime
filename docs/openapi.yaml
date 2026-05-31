@@ -51,6 +51,22 @@ paths:
   /api/v1/monitors:
     get:
       summary: List monitors
+      parameters:
+        - name: tag
+          in: query
+          schema: { type: string }
+        - name: serviceId
+          in: query
+          schema: { type: string }
+        - name: type
+          in: query
+          schema: { type: string }
+        - name: status
+          in: query
+          schema: { type: string, enum: [up, down, degraded] }
+        - name: enabled
+          in: query
+          schema: { type: boolean }
       responses:
         "200":
           description: Monitor list
@@ -110,9 +126,18 @@ paths:
         - name: monitorId
           in: query
           schema: { type: string }
+        - name: serviceId
+          in: query
+          schema: { type: string }
+        - name: statusPageId
+          in: query
+          schema: { type: string }
         - name: status
           in: query
           schema: { type: string, enum: [up, down, degraded] }
+        - name: excludeMaintenance
+          in: query
+          schema: { type: boolean }
         - name: limit
           in: query
           schema: { type: integer }
@@ -172,6 +197,153 @@ paths:
       responses:
         "201":
           description: Created key with one-time raw value
+  /api/v1/services:
+    get:
+      summary: List services
+      responses:
+        "200": { description: Service list }
+    post:
+      summary: Create service
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/Service" }
+      responses:
+        "201": { description: Created service }
+  /api/v1/tags:
+    get:
+      summary: List tags
+      responses:
+        "200": { description: Tag list }
+  /api/v1/maintenance-windows:
+    get:
+      summary: List maintenance windows
+      responses:
+        "200": { description: Maintenance windows }
+    post:
+      summary: Create maintenance window
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/MaintenanceWindow" }
+      responses:
+        "201": { description: Created maintenance window }
+  /api/v1/status-pages:
+    get:
+      summary: List status pages
+      responses:
+        "200": { description: Status pages }
+    post:
+      summary: Create status page
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/StatusPage" }
+      responses:
+        "201": { description: Created status page }
+  /api/v1/status-pages/{id}/components:
+    get:
+      summary: List status page components
+      parameters:
+        - $ref: "#/components/parameters/id"
+      responses:
+        "200": { description: Components }
+    post:
+      summary: Create status page component
+      parameters:
+        - $ref: "#/components/parameters/id"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/StatusPageComponent" }
+      responses:
+        "201": { description: Created component }
+  /api/v1/reports/uptime:
+    get:
+      summary: Uptime report
+      parameters:
+        - name: monitorId
+          in: query
+          schema: { type: string }
+        - name: serviceId
+          in: query
+          schema: { type: string }
+        - name: statusPageId
+          in: query
+          schema: { type: string }
+        - name: from
+          in: query
+          schema: { type: string, format: date-time }
+        - name: to
+          in: query
+          schema: { type: string, format: date-time }
+      responses:
+        "200": { description: Uptime report }
+  /api/v1/exports/check-results:
+    get:
+      summary: Export check results
+      parameters:
+        - name: format
+          in: query
+          schema: { type: string, enum: [json, csv] }
+      responses:
+        "200": { description: Check result export }
+  /api/v1/exports/incidents:
+    get:
+      summary: Export incidents
+      parameters:
+        - name: format
+          in: query
+          schema: { type: string, enum: [json, csv] }
+      responses:
+        "200": { description: Incident export }
+  /status/{slug}:
+    get:
+      security: []
+      summary: Render public status page
+      parameters:
+        - name: slug
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        "200": { description: Public status page HTML }
+  /status/{slug}/json:
+    get:
+      security: []
+      summary: Public status page JSON
+      parameters:
+        - name: slug
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        "200": { description: Public status page JSON }
+  /heartbeat/{token}:
+    get:
+      security: []
+      summary: Record a heartbeat
+      parameters:
+        - name: token
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        "200": { description: Heartbeat recorded }
+    post:
+      security: []
+      summary: Record a heartbeat with metadata
+      parameters:
+        - name: token
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        "200": { description: Heartbeat recorded }
 components:
   securitySchemes:
     bearerAuth:
@@ -190,7 +362,7 @@ components:
       required: [name, type, target]
       properties:
         name: { type: string }
-        type: { type: string, enum: [http, tcp, dns, tls, keyword] }
+        type: { type: string, enum: [http, api, tcp, udp, dns, tls, keyword, domain, ping, heartbeat] }
         target: { type: string }
         method: { type: string, example: GET }
         expectedStatus: { type: integer, example: 200 }
@@ -199,4 +371,61 @@ components:
         intervalSeconds: { type: integer, example: 60 }
         failureThreshold: { type: integer, example: 3 }
         enabled: { type: boolean }
-
+        serviceId: { type: string }
+        tags:
+          type: array
+          items: { type: string }
+        config:
+          type: object
+    Service:
+      type: object
+      required: [name, slug]
+      properties:
+        id: { type: string }
+        name: { type: string }
+        slug: { type: string }
+        description: { type: string }
+    MaintenanceWindow:
+      type: object
+      required: [name, startsAt, endsAt]
+      properties:
+        id: { type: string }
+        name: { type: string }
+        description: { type: string }
+        startsAt: { type: string, format: date-time }
+        endsAt: { type: string, format: date-time }
+        timezone: { type: string, example: UTC }
+        recurrence: { type: string, enum: [none, daily, weekly, monthly] }
+        enabled: { type: boolean }
+        monitorIds:
+          type: array
+          items: { type: string }
+        tagNames:
+          type: array
+          items: { type: string }
+    StatusPage:
+      type: object
+      required: [name, slug]
+      properties:
+        id: { type: string }
+        name: { type: string }
+        slug: { type: string }
+        description: { type: string }
+        logoUrl: { type: string }
+        primaryColor: { type: string }
+        public: { type: boolean }
+        noIndex: { type: boolean }
+    StatusPageComponent:
+      type: object
+      required: [name]
+      properties:
+        id: { type: string }
+        statusPageId: { type: string }
+        name: { type: string }
+        description: { type: string }
+        serviceId: { type: string }
+        manualStatus: { type: string, enum: [up, down, degraded] }
+        orderIndex: { type: integer }
+        monitorIds:
+          type: array
+          items: { type: string }

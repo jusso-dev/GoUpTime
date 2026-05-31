@@ -14,8 +14,6 @@ import (
 
 	"log/slog"
 
-	"github.com/jackc/pgx/v5"
-
 	"github.com/jusso-dev/uptime/internal/auth"
 	"github.com/jusso-dev/uptime/internal/models"
 )
@@ -55,47 +53,39 @@ func (p *Poller) Run(ctx context.Context) error {
 
 func (p *Poller) drainOnce(ctx context.Context) {
 	store := p.dispatcher.Store()
-	entries, tx, err := store.ClaimPendingNotifications(auth.WithSystem(ctx), 50)
+	entries, err := store.ClaimPendingNotifications(auth.WithSystem(ctx), 50)
 	if err != nil {
 		p.logger.Warn("outbox: claim failed", "error", err)
 		return
 	}
-	if tx == nil || len(entries) == 0 {
-		if tx != nil {
-			_ = tx.Rollback(ctx)
-		}
+	if len(entries) == 0 {
 		return
 	}
-	defer func() {
-		if err := tx.Commit(ctx); err != nil {
-			p.logger.Warn("outbox: commit failed", "error", err)
-		}
-	}()
 
 	for _, entry := range entries {
-		p.deliver(ctx, tx, entry)
+		p.deliver(ctx, entry)
 	}
 }
 
-func (p *Poller) deliver(ctx context.Context, tx pgx.Tx, entry models.OutboxEntry) {
+func (p *Poller) deliver(ctx context.Context, entry models.OutboxEntry) {
 	store := p.dispatcher.Store()
 	sysCtx := auth.WithSystemOrg(ctx, entry.OrganizationID)
 	channel, err := store.GetNotificationChannel(sysCtx, entry.ChannelID)
 	if err != nil {
 		// Channel deleted between enqueue and dispatch; mark delivered
 		// (silently swallowed) so we don't loop forever.
-		_ = store.MarkNotificationDelivered(ctx, tx, entry.ID)
+		_ = store.MarkNotificationDelivered(ctx, entry.ID)
 		return
 	}
 	provider, ok := p.dispatcher.ProviderFor(channel.Type)
 	if !ok {
-		_ = store.MarkNotificationDelivered(ctx, tx, entry.ID)
+		_ = store.MarkNotificationDelivered(ctx, entry.ID)
 		return
 	}
 
 	var event Event
 	if err := json.Unmarshal(entry.Payload, &event); err != nil {
-		_ = store.MarkNotificationRetry(ctx, tx, entry.ID, entry.Attempts+1, maxAttempts,
+		_ = store.MarkNotificationRetry(ctx, entry.ID, entry.Attempts+1, maxAttempts,
 			"decode payload: "+err.Error(), time.Now().Add(time.Minute))
 		return
 	}
@@ -103,7 +93,7 @@ func (p *Poller) deliver(ctx context.Context, tx pgx.Tx, entry models.OutboxEntr
 	_, sendErr := provider.Send(ctx, channel, event)
 	attempts := entry.Attempts + 1
 	if sendErr == nil {
-		if err := store.MarkNotificationDelivered(ctx, tx, entry.ID); err != nil {
+		if err := store.MarkNotificationDelivered(ctx, entry.ID); err != nil {
 			p.logger.Warn("outbox: mark delivered failed", "id", entry.ID, "error", err)
 		}
 		return
@@ -112,7 +102,7 @@ func (p *Poller) deliver(ctx context.Context, tx pgx.Tx, entry models.OutboxEntr
 		return
 	}
 	backoff := backoffFor(attempts)
-	if err := store.MarkNotificationRetry(ctx, tx, entry.ID, attempts, maxAttempts,
+	if err := store.MarkNotificationRetry(ctx, entry.ID, attempts, maxAttempts,
 		sendErr.Error(), time.Now().Add(backoff)); err != nil {
 		p.logger.Warn("outbox: mark retry failed", "id", entry.ID, "error", err)
 	}

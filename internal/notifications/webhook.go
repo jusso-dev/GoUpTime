@@ -15,7 +15,9 @@ import (
 	"io"
 	mathrand "math/rand/v2"
 	"net/http"
+	"net/smtp"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -122,14 +124,23 @@ func (s *Service) send(ctx context.Context, event IncidentEvent) {
 	// single slow webhook stall every other receiver.
 	var wg sync.WaitGroup
 	for _, channel := range channels {
-		if !channel.Enabled || channel.Type != "webhook" {
+		if !channel.Enabled {
 			continue
 		}
 		ch := channel
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			s.deliver(ctx, ch, event, payload)
+			switch ch.Type {
+			case "webhook":
+				s.deliver(ctx, ch, event, payload)
+			case "slack", "discord", "teams", "google_chat":
+				s.deliver(ctx, ch, event, chatPayload(event, ch.Type))
+			case "telegram":
+				s.deliverTelegram(ctx, ch, event)
+			case "smtp":
+				s.deliverSMTP(ctx, ch, event)
+			}
 		}()
 	}
 	wg.Wait()
@@ -235,11 +246,86 @@ func (s *Service) sign(payload []byte) string {
 	return hex.EncodeToString(mac.Sum(nil))
 }
 
-// --- Provider implementation (used by the new dispatcher) ---------------
-//
-// WebhookProvider wraps Service so the dispatcher can route generic
-// "webhook" channels through the same battle-tested code path that
-// existing customers rely on.
+func chatPayload(event IncidentEvent, channelType string) []byte {
+	text := fmt.Sprintf("%s: %s", event.Event, event.MonitorName)
+	if event.Reason != "" {
+		text += " - " + event.Reason
+	}
+	switch channelType {
+	case "discord":
+		payload, _ := json.Marshal(map[string]string{"content": text})
+		return payload
+	default:
+		payload, _ := json.Marshal(map[string]string{"text": text})
+		return payload
+	}
+}
+
+func (s *Service) deliverTelegram(ctx context.Context, channel models.NotificationChannel, event IncidentEvent) {
+	token := strings.TrimSpace(stringFromConfig(channel.Config, "botToken"))
+	chatID := strings.TrimSpace(stringFromConfig(channel.Config, "chatId"))
+	if token == "" || chatID == "" {
+		_ = s.store.LogNotificationEvent(ctx, channel.ID, event.IncidentID, event.Event, false, 0, "telegram botToken and chatId are required")
+		return
+	}
+	channel.URL = "https://api.telegram.org/bot" + token + "/sendMessage"
+	payload, _ := json.Marshal(map[string]string{
+		"chat_id": chatID,
+		"text":    fmt.Sprintf("%s: %s %s", event.Event, event.MonitorName, event.Reason),
+	})
+	s.deliver(ctx, channel, event, payload)
+}
+
+func (s *Service) deliverSMTP(ctx context.Context, channel models.NotificationChannel, event IncidentEvent) {
+	host := strings.TrimSpace(stringFromConfig(channel.Config, "host"))
+	port := strings.TrimSpace(stringFromConfig(channel.Config, "port"))
+	from := strings.TrimSpace(stringFromConfig(channel.Config, "from"))
+	to := strings.TrimSpace(stringFromConfig(channel.Config, "to"))
+	if port == "" {
+		port = "587"
+	}
+	if host == "" || from == "" || to == "" {
+		_ = s.store.LogNotificationEvent(ctx, channel.ID, event.IncidentID, event.Event, false, 0, "smtp host, from, and to are required")
+		return
+	}
+	addr := host + ":" + port
+	subject := "UpTime " + event.Event + ": " + event.MonitorName
+	body := fmt.Sprintf("%s\nMonitor: %s\nReason: %s\n", event.Event, event.MonitorName, event.Reason)
+	msg := []byte("From: " + from + "\r\nTo: " + to + "\r\nSubject: " + subject + "\r\nContent-Type: text/plain; charset=utf-8\r\n\r\n" + body)
+	var auth smtp.Auth
+	username := stringFromConfig(channel.Config, "username")
+	password := stringFromConfig(channel.Config, "password")
+	if username != "" || password != "" {
+		auth = smtp.PlainAuth("", username, password, host)
+	}
+	sendCtx, cancel := context.WithTimeout(ctx, s.opts.PerAttemptTimeout)
+	defer cancel()
+	errCh := make(chan error, 1)
+	go func() {
+		errCh <- smtp.SendMail(addr, auth, from, splitRecipients(to), msg)
+	}()
+	select {
+	case err := <-errCh:
+		if err != nil {
+			_ = s.store.LogNotificationEvent(ctx, channel.ID, event.IncidentID, event.Event, false, 0, err.Error())
+			return
+		}
+		_ = s.store.LogNotificationEvent(ctx, channel.ID, event.IncidentID, event.Event, true, 250, "")
+	case <-sendCtx.Done():
+		_ = s.store.LogNotificationEvent(ctx, channel.ID, event.IncidentID, event.Event, false, 0, "smtp delivery timed out")
+	}
+}
+
+func splitRecipients(value string) []string {
+	parts := strings.Split(value, ",")
+	out := make([]string, 0, len(parts))
+	for _, part := range parts {
+		if trimmed := strings.TrimSpace(part); trimmed != "" {
+			out = append(out, trimmed)
+		}
+	}
+	return out
+}
 
 type WebhookProvider struct {
 	svc *Service
@@ -250,10 +336,9 @@ func NewWebhookProvider(svc *Service) *WebhookProvider { return &WebhookProvider
 func (p *WebhookProvider) Type() string { return "webhook" }
 
 func (p *WebhookProvider) Send(ctx context.Context, channel models.NotificationChannel, event Event) (Delivery, error) {
-	// Prefer config.webhook_url; fall back to top-level URL for legacy rows.
 	url := channel.URL
-	if v, ok := channel.Config["webhook_url"].(string); ok && v != "" {
-		url = v
+	if configured := stringFromConfig(channel.Config, "webhook_url"); configured != "" {
+		url = configured
 	}
 	if url == "" {
 		return Delivery{}, fmt.Errorf("webhook channel %s: url missing", channel.ID)

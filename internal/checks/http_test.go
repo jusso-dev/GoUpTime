@@ -71,6 +71,44 @@ func TestHTTPCheckerExpectedStatusMismatch(t *testing.T) {
 	}
 }
 
+func TestAPICheckerJSONAssertions(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			t.Fatalf("expected POST, got %s", r.Method)
+		}
+		if r.Header.Get("Authorization") != "Bearer secret" {
+			t.Fatalf("missing bearer token")
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusCreated)
+		_, _ = w.Write([]byte(`{"ok":true,"count":3,"items":[{"name":"alpha"}]}`))
+	}))
+	defer server.Close()
+
+	checker := HTTPChecker{Options: Options{AllowPrivateTargets: true, DefaultTimeout: time.Second}}
+	result, err := checker.Check(context.Background(), models.Monitor{
+		Type:           models.MonitorAPI,
+		Target:         server.URL,
+		Method:         "POST",
+		ExpectedStatus: http.StatusCreated,
+		Config: map[string]any{
+			"bearerToken": "secret",
+			"body":        map[string]any{"probe": true},
+			"assertions": []map[string]any{
+				{"path": "$.ok", "operator": "equals", "value": true},
+				{"path": "$.count", "operator": "greaterThan", "value": 2},
+				{"path": "$.items[0].name", "operator": "contains", "value": "alp"},
+			},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !result.Success {
+		t.Fatalf("expected API assertion success: %+v", result)
+	}
+}
+
 func TestValidateURLBlocksLocalhost(t *testing.T) {
 	_, err := ValidateURL("http://localhost:8080", false)
 	if !errors.Is(err, ErrBlockedTarget) {

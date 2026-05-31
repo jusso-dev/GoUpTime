@@ -8,14 +8,14 @@ import (
 	"testing"
 	"time"
 
-	"github.com/jackc/pgx/v5"
-
 	"github.com/jusso-dev/uptime/internal/config"
 	"github.com/jusso-dev/uptime/internal/metrics"
 	"github.com/jusso-dev/uptime/internal/models"
+	"github.com/jusso-dev/uptime/internal/repository"
 )
 
 type fakeStore struct {
+	repository.NoopStore
 	mu    sync.Mutex
 	beats []models.WorkerHeartbeat
 	calls atomic.Int32
@@ -36,196 +36,6 @@ func (f *fakeStore) latest() (models.WorkerHeartbeat, bool) {
 		return models.WorkerHeartbeat{}, false
 	}
 	return f.beats[len(f.beats)-1], true
-}
-
-// Implement the rest of repository.Store as no-ops so we can satisfy the
-// interface without dragging the postgres driver into worker tests.
-func (f *fakeStore) Ping(context.Context) error { return nil }
-func (f *fakeStore) CreateMonitor(context.Context, models.Monitor) (models.Monitor, error) {
-	return models.Monitor{}, nil
-}
-func (f *fakeStore) ListMonitors(context.Context) ([]models.Monitor, error)        { return nil, nil }
-func (f *fakeStore) ListEnabledMonitors(context.Context) ([]models.Monitor, error) { return nil, nil }
-func (f *fakeStore) GetMonitor(context.Context, string) (models.Monitor, error) {
-	return models.Monitor{}, nil
-}
-func (f *fakeStore) UpdateMonitor(context.Context, models.Monitor) (models.Monitor, error) {
-	return models.Monitor{}, nil
-}
-func (f *fakeStore) DeleteMonitor(context.Context, string) error                           { return nil }
-func (f *fakeStore) UpdateMonitorStatus(context.Context, string, models.CheckStatus) error { return nil }
-func (f *fakeStore) CreateCheckResult(context.Context, models.CheckResult) (models.CheckResult, error) {
-	return models.CheckResult{}, nil
-}
-func (f *fakeStore) ListCheckResults(context.Context, models.ResultFilter) ([]models.CheckResult, error) {
-	return nil, nil
-}
-func (f *fakeStore) CountConsecutiveFailures(context.Context, string) (int, error) { return 0, nil }
-func (f *fakeStore) ListIncidents(context.Context) ([]models.Incident, error)      { return nil, nil }
-func (f *fakeStore) GetIncident(context.Context, string) (models.Incident, error) {
-	return models.Incident{}, nil
-}
-func (f *fakeStore) GetOpenIncident(context.Context, string) (*models.Incident, error) {
-	return nil, nil
-}
-func (f *fakeStore) OpenIncident(context.Context, models.Incident) (models.Incident, error) {
-	return models.Incident{}, nil
-}
-func (f *fakeStore) ResolveIncident(context.Context, string) (models.Incident, error) {
-	return models.Incident{}, nil
-}
-func (f *fakeStore) ListNotificationChannels(context.Context) ([]models.NotificationChannel, error) {
-	return nil, nil
-}
-func (f *fakeStore) GetNotificationChannel(context.Context, string) (models.NotificationChannel, error) {
-	return models.NotificationChannel{}, nil
-}
-func (f *fakeStore) CreateNotificationChannel(context.Context, models.NotificationChannel) (models.NotificationChannel, error) {
-	return models.NotificationChannel{}, nil
-}
-func (f *fakeStore) UpdateNotificationChannel(context.Context, models.NotificationChannel) (models.NotificationChannel, error) {
-	return models.NotificationChannel{}, nil
-}
-func (f *fakeStore) DeleteNotificationChannel(context.Context, string) error { return nil }
-func (f *fakeStore) LogNotificationEvent(context.Context, string, string, string, bool, int, string) error {
-	return nil
-}
-func (f *fakeStore) CreateAPIKey(context.Context, models.APIKey) (models.APIKey, error) {
-	return models.APIKey{}, nil
-}
-func (f *fakeStore) ListAPIKeys(context.Context) ([]models.APIKey, error) { return nil, nil }
-func (f *fakeStore) FindAPIKeyByHash(context.Context, string) (*models.APIKey, error) {
-	return nil, nil
-}
-func (f *fakeStore) TouchAPIKey(context.Context, string) error  { return nil }
-func (f *fakeStore) RevokeAPIKey(context.Context, string) error { return nil }
-func (f *fakeStore) OverviewStats(context.Context) (models.OverviewStats, error) {
-	return models.OverviewStats{}, nil
-}
-func (f *fakeStore) ListWorkerHeartbeats(context.Context, time.Time) ([]models.WorkerHeartbeat, error) {
-	return nil, nil
-}
-func (f *fakeStore) DeleteWorkerHeartbeat(context.Context, string) error { return nil }
-func (f *fakeStore) AcknowledgeIncident(context.Context, string, string) (models.Incident, error) {
-	return models.Incident{}, nil
-}
-func (f *fakeStore) GetOrganization(context.Context, string) (models.Organization, error) {
-	return models.Organization{}, nil
-}
-func (f *fakeStore) GetOrganizationByClerkID(context.Context, string) (models.Organization, error) {
-	return models.Organization{}, nil
-}
-func (f *fakeStore) UpsertOrganization(context.Context, models.Organization) (models.Organization, error) {
-	return models.Organization{}, nil
-}
-func (f *fakeStore) DeleteOrganizationByClerkID(context.Context, string) error { return nil }
-func (f *fakeStore) GetUserByID(context.Context, string) (models.User, error) {
-	return models.User{}, nil
-}
-func (f *fakeStore) GetUserByClerkID(context.Context, string) (models.User, error) {
-	return models.User{}, nil
-}
-func (f *fakeStore) UpsertUser(context.Context, models.User) (models.User, error) {
-	return models.User{}, nil
-}
-func (f *fakeStore) DeleteUserByClerkID(context.Context, string) error { return nil }
-func (f *fakeStore) ListMembershipsForUser(context.Context, string) ([]models.MembershipDetail, error) {
-	return nil, nil
-}
-func (f *fakeStore) UpsertMembership(context.Context, models.Membership) error { return nil }
-func (f *fakeStore) DeleteMembership(context.Context, string, string) error    { return nil }
-func (f *fakeStore) RecordWebhookEvent(context.Context, string, string, []byte) (bool, error) {
-	return true, nil
-}
-func (f *fakeStore) GetHeartbeat(context.Context, string) (models.Heartbeat, error) {
-	return models.Heartbeat{}, nil
-}
-func (f *fakeStore) SetHeartbeat(context.Context, models.Heartbeat) (models.Heartbeat, error) {
-	return models.Heartbeat{}, nil
-}
-func (f *fakeStore) DeleteHeartbeat(context.Context, string) error { return nil }
-func (f *fakeStore) RecordHeartbeatPing(context.Context, string, string, string) (string, error) {
-	return "", nil
-}
-func (f *fakeStore) GetMultistepScript(context.Context, string) (models.MultistepScript, error) {
-	return models.MultistepScript{}, nil
-}
-func (f *fakeStore) SetMultistepScript(context.Context, models.MultistepScript) (models.MultistepScript, error) {
-	return models.MultistepScript{}, nil
-}
-func (f *fakeStore) GetBrowserScript(context.Context, string) (models.BrowserScript, error) {
-	return models.BrowserScript{}, nil
-}
-func (f *fakeStore) SetBrowserScript(context.Context, models.BrowserScript) (models.BrowserScript, error) {
-	return models.BrowserScript{}, nil
-}
-func (f *fakeStore) EnqueueNotification(context.Context, models.OutboxEntry) (models.OutboxEntry, error) {
-	return models.OutboxEntry{}, nil
-}
-func (f *fakeStore) ClaimPendingNotifications(context.Context, int) ([]models.OutboxEntry, pgx.Tx, error) {
-	return nil, nil, nil
-}
-func (f *fakeStore) MarkNotificationDelivered(context.Context, pgx.Tx, string) error {
-	return nil
-}
-func (f *fakeStore) MarkNotificationRetry(context.Context, pgx.Tx, string, int, int, string, time.Time) error {
-	return nil
-}
-func (f *fakeStore) UpsertPushDevice(context.Context, models.PushDevice) (models.PushDevice, error) {
-	return models.PushDevice{}, nil
-}
-func (f *fakeStore) DeletePushDevice(context.Context, string) error { return nil }
-func (f *fakeStore) ListPushDevicesForOrg(context.Context, string) ([]models.PushDevice, error) {
-	return nil, nil
-}
-func (f *fakeStore) ListPushDevicesForUser(context.Context, string) ([]models.PushDevice, error) {
-	return nil, nil
-}
-func (f *fakeStore) ListStatusPages(context.Context) ([]models.StatusPage, error) { return nil, nil }
-func (f *fakeStore) CreateStatusPage(context.Context, models.StatusPage) (models.StatusPage, error) {
-	return models.StatusPage{}, nil
-}
-func (f *fakeStore) GetStatusPageBySlug(context.Context, string) (models.StatusPage, error) {
-	return models.StatusPage{}, nil
-}
-func (f *fakeStore) GetStatusPageByDomain(context.Context, string) (models.StatusPage, error) {
-	return models.StatusPage{}, nil
-}
-func (f *fakeStore) DeleteStatusPage(context.Context, string) error { return nil }
-func (f *fakeStore) ListStatusPageComponents(context.Context, string) ([]models.StatusPageComponent, error) {
-	return nil, nil
-}
-func (f *fakeStore) UpsertStatusPageComponent(context.Context, models.StatusPageComponent) (models.StatusPageComponent, error) {
-	return models.StatusPageComponent{}, nil
-}
-func (f *fakeStore) DeleteStatusPageComponent(context.Context, string) error { return nil }
-func (f *fakeStore) GetMonitorsByIDs(context.Context, string, []string) ([]models.Monitor, error) {
-	return nil, nil
-}
-func (f *fakeStore) ListMaintenanceWindows(context.Context) ([]models.MaintenanceWindow, error) {
-	return nil, nil
-}
-func (f *fakeStore) CreateMaintenanceWindow(context.Context, models.MaintenanceWindow) (models.MaintenanceWindow, error) {
-	return models.MaintenanceWindow{}, nil
-}
-func (f *fakeStore) DeleteMaintenanceWindow(context.Context, string) error { return nil }
-func (f *fakeStore) IsMonitorInMaintenance(context.Context, string, time.Time) (bool, error) {
-	return false, nil
-}
-func (f *fakeStore) ListTags(context.Context) ([]models.Tag, error) { return nil, nil }
-func (f *fakeStore) CreateTag(context.Context, models.Tag) (models.Tag, error) {
-	return models.Tag{}, nil
-}
-func (f *fakeStore) DeleteTag(context.Context, string) error                { return nil }
-func (f *fakeStore) SetMonitorTags(context.Context, string, []string) error { return nil }
-func (f *fakeStore) ListMonitorsByTags(context.Context, []string) ([]models.Monitor, error) {
-	return nil, nil
-}
-func (f *fakeStore) SLAReportForMonitor(context.Context, string, time.Time, time.Time) (models.SLAReport, error) {
-	return models.SLAReport{}, nil
-}
-func (f *fakeStore) SLAReportForOrg(context.Context, time.Time, time.Time) (models.SLAReport, error) {
-	return models.SLAReport{}, nil
 }
 
 // sharedMetrics is built once because metrics.New uses promauto, which

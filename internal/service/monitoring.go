@@ -120,6 +120,16 @@ func (s *MonitoringService) RunCheck(ctx context.Context, monitor models.Monitor
 	if result.Region == "" {
 		result.Region = s.region
 	}
+	if active, err := s.store.ActiveMaintenanceForMonitor(storeCtx, monitor.ID, time.Now().UTC()); err != nil {
+		return result, fmt.Errorf("lookup maintenance windows: %w", err)
+	} else if active != nil && !result.Success {
+		result.MaintenanceSuppressed = true
+		if result.Metadata == nil {
+			result.Metadata = map[string]any{}
+		}
+		result.Metadata["maintenanceWindowId"] = active.ID
+		result.Metadata["maintenanceWindowName"] = active.Name
+	}
 	saved, err := s.store.CreateCheckResult(storeCtx, result)
 	if err != nil {
 		return result, fmt.Errorf("store check result: %w", err)
@@ -174,6 +184,9 @@ func (s *MonitoringService) applyIncidentRules(ctx context.Context, monitor mode
 			}
 			s.dispatchResolved(monitor, resolved)
 		}
+		return nil
+	}
+	if result.MaintenanceSuppressed {
 		return nil
 	}
 
@@ -276,4 +289,3 @@ func (s *MonitoringService) incidentURL(orgID, incidentID string) string {
 	}
 	return s.appBaseURL + "/orgs/" + orgID + "/incidents/" + incidentID
 }
-

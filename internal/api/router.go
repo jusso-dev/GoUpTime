@@ -107,6 +107,14 @@ func NewRouter(cfg config.Config, store repository.Store, redisClient *redis.Cli
 	v1.POST("/incidents/:id/ack", s.requireRole(auth.RoleMember), s.acknowledgeIncident)
 	v1.GET("/stats/overview", s.overviewStats)
 	v1.GET("/stats/monitors/:id", s.monitorStats)
+	v1.GET("/reports/uptime", s.uptimeReport)
+	v1.GET("/exports/check-results", s.exportCheckResults)
+	v1.GET("/exports/incidents", s.exportIncidents)
+	v1.GET("/services", s.listServices)
+	v1.POST("/services", s.requireRole(auth.RoleMember), s.createService)
+	v1.GET("/services/:id", s.getService)
+	v1.PUT("/services/:id", s.requireRole(auth.RoleMember), s.updateService)
+	v1.DELETE("/services/:id", s.requireRole(auth.RoleAdmin), s.deleteService)
 	v1.GET("/notification-channels", s.listNotificationChannels)
 	v1.POST("/notification-channels", s.requireRole(auth.RoleAdmin), s.createNotificationChannel)
 	v1.PUT("/notification-channels/:id", s.requireRole(auth.RoleAdmin), s.updateNotificationChannel)
@@ -122,14 +130,20 @@ func NewRouter(cfg config.Config, store repository.Store, redisClient *redis.Cli
 	// Status page management.
 	v1.GET("/status-pages", s.listStatusPages)
 	v1.POST("/status-pages", s.requireRole(auth.RoleAdmin), s.createStatusPage)
+	v1.GET("/status-pages/:id", s.getStatusPage)
+	v1.PUT("/status-pages/:id", s.requireRole(auth.RoleAdmin), s.updateStatusPage)
 	v1.DELETE("/status-pages/:id", s.requireRole(auth.RoleAdmin), s.deleteStatusPage)
 	v1.GET("/status-pages/:id/components", s.listStatusPageComponents)
+	v1.POST("/status-pages/:id/components", s.requireRole(auth.RoleMember), s.createStatusPageComponent)
+	v1.PUT("/status-pages/:id/components/:componentId", s.requireRole(auth.RoleMember), s.updateStatusPageComponent)
 	v1.PUT("/status-pages/:id/components", s.requireRole(auth.RoleMember), s.upsertStatusPageComponent)
 	v1.DELETE("/status-pages/:id/components/:componentId", s.requireRole(auth.RoleMember), s.deleteStatusPageComponent)
 
 	// Maintenance windows.
 	v1.GET("/maintenance-windows", s.listMaintenanceWindows)
 	v1.POST("/maintenance-windows", s.requireRole(auth.RoleMember), s.createMaintenanceWindow)
+	v1.GET("/maintenance-windows/:id", s.getMaintenanceWindow)
+	v1.PUT("/maintenance-windows/:id", s.requireRole(auth.RoleMember), s.updateMaintenanceWindow)
 	v1.DELETE("/maintenance-windows/:id", s.requireRole(auth.RoleMember), s.deleteMaintenanceWindow)
 
 	// Tags.

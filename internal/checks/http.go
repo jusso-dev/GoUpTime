@@ -1,13 +1,18 @@
 package checks
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"net"
 	"net/http"
 	"net/http/httptrace"
+	"reflect"
+	"regexp"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -36,8 +41,8 @@ func (c HTTPChecker) Check(ctx context.Context, monitor models.Monitor) (models.
 	if method == "" {
 		method = http.MethodGet
 	}
-	if method != http.MethodGet && method != http.MethodHead {
-		err := fmt.Errorf("unsupported http method %q (only GET and HEAD)", method)
+	if !methodAllowed(monitor.Type, method) {
+		err := fmt.Errorf("unsupported http method %q for %s monitor", method, monitor.Type)
 		result.Error = err.Error()
 		return result, err
 	}
@@ -47,13 +52,19 @@ func (c HTTPChecker) Check(ctx context.Context, monitor models.Monitor) (models.
 	defer cancel()
 
 	timings := &traceTimings{start: time.Now()}
-	req, err := http.NewRequestWithContext(httptrace.WithClientTrace(checkCtx, timings.clientTrace()), method, u.String(), nil)
+	bodyReader, err := requestBody(monitor)
+	if err != nil {
+		result.Error = err.Error()
+		return result, err
+	}
+	req, err := http.NewRequestWithContext(httptrace.WithClientTrace(checkCtx, timings.clientTrace()), method, u.String(), bodyReader)
 	if err != nil {
 		result.Error = fmt.Sprintf("build http request: %v", err)
 		return result, err
 	}
 	req.Header.Set("User-Agent", c.Options.UserAgent)
 	req.Header.Set("Accept", "*/*")
+	applyRequestConfig(req, monitor)
 
 	// Per-check sub-timeouts. TLSHandshakeTimeout shorter than the overall
 	// timeout keeps a slow handshake from eating the whole budget.
@@ -127,6 +138,12 @@ func (c HTTPChecker) Check(ctx context.Context, monitor models.Monitor) (models.
 		success = false
 		result.Error = fmt.Sprintf("expected keyword %q not found in response", monitor.ExpectedKeyword)
 	}
+	if monitor.Type == models.MonitorAPI && success {
+		if err := validateAPIAssertions(result.ResponseSnippet, monitor.Config); err != nil {
+			success = false
+			result.Error = err.Error()
+		}
+	}
 	if !success && result.Error == "" {
 		result.Error = fmt.Sprintf("expected status %d, got %d", expected, resp.StatusCode)
 	}
@@ -135,6 +152,243 @@ func (c HTTPChecker) Check(ctx context.Context, monitor models.Monitor) (models.
 		result.Status = models.StatusUp
 	}
 	return result, nil
+}
+
+func methodAllowed(monitorType models.MonitorType, method string) bool {
+	if monitorType == models.MonitorAPI {
+		switch method {
+		case http.MethodGet, http.MethodHead, http.MethodPost, http.MethodPut, http.MethodPatch, http.MethodDelete, http.MethodOptions:
+			return true
+		default:
+			return false
+		}
+	}
+	return method == http.MethodGet || method == http.MethodHead
+}
+
+func requestBody(monitor models.Monitor) (io.Reader, error) {
+	if monitor.Type != models.MonitorAPI || monitor.Config == nil {
+		return nil, nil
+	}
+	value, ok := monitor.Config["body"]
+	if !ok || value == nil {
+		return nil, nil
+	}
+	switch typed := value.(type) {
+	case string:
+		return strings.NewReader(typed), nil
+	case []byte:
+		return bytes.NewReader(typed), nil
+	default:
+		b, err := json.Marshal(typed)
+		if err != nil {
+			return nil, fmt.Errorf("marshal request body: %w", err)
+		}
+		return bytes.NewReader(b), nil
+	}
+}
+
+func applyRequestConfig(req *http.Request, monitor models.Monitor) {
+	if monitor.Type != models.MonitorAPI || monitor.Config == nil {
+		return
+	}
+	if headers, ok := stringMap(monitor.Config["headers"]); ok {
+		for key, value := range headers {
+			if strings.TrimSpace(key) != "" {
+				req.Header.Set(key, value)
+			}
+		}
+	}
+	if req.Body != nil && req.Header.Get("Content-Type") == "" {
+		req.Header.Set("Content-Type", "application/json")
+	}
+	if token, _ := monitor.Config["bearerToken"].(string); token != "" {
+		req.Header.Set("Authorization", "Bearer "+token)
+	}
+	username, _ := monitor.Config["basicAuthUsername"].(string)
+	password, _ := monitor.Config["basicAuthPassword"].(string)
+	if username != "" || password != "" {
+		req.SetBasicAuth(username, password)
+	}
+}
+
+func stringMap(value any) (map[string]string, bool) {
+	switch typed := value.(type) {
+	case map[string]string:
+		return typed, true
+	case map[string]any:
+		out := map[string]string{}
+		for k, v := range typed {
+			out[k] = fmt.Sprint(v)
+		}
+		return out, true
+	default:
+		return nil, false
+	}
+}
+
+type apiAssertion struct {
+	Path     string `json:"path"`
+	Operator string `json:"operator"`
+	Value    any    `json:"value"`
+}
+
+func validateAPIAssertions(snippet string, config map[string]any) error {
+	if config == nil || config["assertions"] == nil {
+		return nil
+	}
+	assertions, err := parseAssertions(config["assertions"])
+	if err != nil {
+		return err
+	}
+	if len(assertions) == 0 {
+		return nil
+	}
+	var payload any
+	if err := json.Unmarshal([]byte(snippet), &payload); err != nil {
+		return fmt.Errorf("parse json response for assertions: %w", err)
+	}
+	for _, assertion := range assertions {
+		got, exists := jsonPath(payload, assertion.Path)
+		if err := evaluateAssertion(assertion, got, exists); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func parseAssertions(value any) ([]apiAssertion, error) {
+	b, err := json.Marshal(value)
+	if err != nil {
+		return nil, fmt.Errorf("marshal assertions: %w", err)
+	}
+	var assertions []apiAssertion
+	if err := json.Unmarshal(b, &assertions); err != nil {
+		return nil, fmt.Errorf("parse assertions: %w", err)
+	}
+	return assertions, nil
+}
+
+func evaluateAssertion(assertion apiAssertion, got any, exists bool) error {
+	op := assertion.Operator
+	if op == "" {
+		op = "equals"
+	}
+	switch op {
+	case "exists":
+		if !exists {
+			return fmt.Errorf("assertion failed: %s does not exist", assertion.Path)
+		}
+	case "equals":
+		if !exists || !valuesEqual(got, assertion.Value) {
+			return fmt.Errorf("assertion failed: %s expected %v, got %v", assertion.Path, assertion.Value, got)
+		}
+	case "notEquals":
+		if exists && valuesEqual(got, assertion.Value) {
+			return fmt.Errorf("assertion failed: %s should not equal %v", assertion.Path, assertion.Value)
+		}
+	case "contains":
+		if !strings.Contains(fmt.Sprint(got), fmt.Sprint(assertion.Value)) {
+			return fmt.Errorf("assertion failed: %s does not contain %v", assertion.Path, assertion.Value)
+		}
+	case "greaterThan", "lessThan":
+		gotNumber, ok := numberValue(got)
+		if !ok {
+			return fmt.Errorf("assertion failed: %s is not numeric", assertion.Path)
+		}
+		wantNumber, ok := numberValue(assertion.Value)
+		if !ok {
+			return fmt.Errorf("assertion failed: expected value for %s is not numeric", assertion.Path)
+		}
+		if op == "greaterThan" && gotNumber <= wantNumber {
+			return fmt.Errorf("assertion failed: %s expected > %v, got %v", assertion.Path, wantNumber, gotNumber)
+		}
+		if op == "lessThan" && gotNumber >= wantNumber {
+			return fmt.Errorf("assertion failed: %s expected < %v, got %v", assertion.Path, wantNumber, gotNumber)
+		}
+	case "matchesRegex":
+		matched, err := regexp.MatchString(fmt.Sprint(assertion.Value), fmt.Sprint(got))
+		if err != nil {
+			return fmt.Errorf("assertion failed: invalid regex for %s: %w", assertion.Path, err)
+		}
+		if !matched {
+			return fmt.Errorf("assertion failed: %s did not match %v", assertion.Path, assertion.Value)
+		}
+	default:
+		return fmt.Errorf("unsupported assertion operator %q", op)
+	}
+	return nil
+}
+
+func valuesEqual(a, b any) bool {
+	if an, ok := numberValue(a); ok {
+		if bn, ok := numberValue(b); ok {
+			return an == bn
+		}
+	}
+	return reflect.DeepEqual(a, b) || fmt.Sprint(a) == fmt.Sprint(b)
+}
+
+func numberValue(value any) (float64, bool) {
+	switch typed := value.(type) {
+	case float64:
+		return typed, true
+	case float32:
+		return float64(typed), true
+	case int:
+		return float64(typed), true
+	case int64:
+		return float64(typed), true
+	case json.Number:
+		parsed, err := typed.Float64()
+		return parsed, err == nil
+	case string:
+		parsed, err := strconv.ParseFloat(typed, 64)
+		return parsed, err == nil
+	default:
+		return 0, false
+	}
+}
+
+func jsonPath(payload any, path string) (any, bool) {
+	if path == "" || path == "$" {
+		return payload, true
+	}
+	if !strings.HasPrefix(path, "$.") {
+		return nil, false
+	}
+	current := payload
+	parts := strings.Split(strings.TrimPrefix(path, "$."), ".")
+	for _, part := range parts {
+		field := part
+		index := -1
+		if open := strings.Index(part, "["); open >= 0 && strings.HasSuffix(part, "]") {
+			field = part[:open]
+			parsed, err := strconv.Atoi(strings.TrimSuffix(part[open+1:], "]"))
+			if err != nil {
+				return nil, false
+			}
+			index = parsed
+		}
+		if field != "" {
+			object, ok := current.(map[string]any)
+			if !ok {
+				return nil, false
+			}
+			current, ok = object[field]
+			if !ok {
+				return nil, false
+			}
+		}
+		if index >= 0 {
+			array, ok := current.([]any)
+			if !ok || index >= len(array) {
+				return nil, false
+			}
+			current = array[index]
+		}
+	}
+	return current, true
 }
 
 // classifyHTTPError produces a stable, operator-friendly error message

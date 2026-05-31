@@ -8,12 +8,15 @@ type IncidentStatus string
 
 const (
 	MonitorHTTP      MonitorType = "http"
+	MonitorAPI       MonitorType = "api"
 	MonitorTCP       MonitorType = "tcp"
+	MonitorUDP       MonitorType = "udp"
 	MonitorDNS       MonitorType = "dns"
 	MonitorTLS       MonitorType = "tls"
 	MonitorKeyword   MonitorType = "keyword"
 	MonitorHeartbeat MonitorType = "heartbeat"
 	MonitorICMP      MonitorType = "icmp"
+	MonitorPing      MonitorType = "ping"
 	MonitorBrowser   MonitorType = "browser"
 	MonitorDomain    MonitorType = "domain"
 	MonitorMultistep MonitorType = "multistep"
@@ -32,50 +35,55 @@ const (
 // OrganizationID is filled in by the repository from the request principal
 // — clients cannot set it on create or update.
 type Monitor struct {
-	ID               string      `json:"id"`
-	OrganizationID   string      `json:"organizationId"`
-	Name             string      `json:"name" binding:"required,min=1,max=120"`
-	Type             MonitorType `json:"type" binding:"required,oneof=http tcp dns tls keyword heartbeat icmp browser domain multistep"`
+	ID             string      `json:"id"`
+	OrganizationID string      `json:"organizationId"`
+	Name           string      `json:"name" binding:"required,min=1,max=120"`
+	Type           MonitorType `json:"type" binding:"required,oneof=http api tcp udp dns tls keyword heartbeat icmp ping browser domain multistep"`
 	// Target is required for network-based checks (HTTP/TCP/DNS/TLS/ICMP/
 	// Domain). Heartbeat, Browser, and Multistep monitors store their
 	// configuration in dedicated tables; the binding tag is intentionally
 	// loose here and the API handler enforces per-type rules.
-	Target           string      `json:"target" binding:"omitempty,max=2048"`
-	Method           string      `json:"method" binding:"omitempty,oneof=GET HEAD"`
-	ExpectedStatus   int         `json:"expectedStatus" binding:"omitempty,min=100,max=599"`
-	ExpectedKeyword  string      `json:"expectedKeyword" binding:"omitempty,max=512"`
-	TimeoutSeconds   int         `json:"timeoutSeconds" binding:"omitempty,min=1,max=300"`
-	IntervalSeconds  int         `json:"intervalSeconds" binding:"omitempty,min=10,max=86400"`
-	FailureThreshold int         `json:"failureThreshold" binding:"omitempty,min=1,max=100"`
-	Enabled          bool        `json:"enabled"`
-	Status           CheckStatus `json:"status"`
+	Target           string         `json:"target" binding:"omitempty,max=2048"`
+	Method           string         `json:"method" binding:"omitempty,oneof=GET HEAD POST PUT PATCH DELETE OPTIONS"`
+	ExpectedStatus   int            `json:"expectedStatus" binding:"omitempty,min=100,max=599"`
+	ExpectedKeyword  string         `json:"expectedKeyword" binding:"omitempty,max=512"`
+	TimeoutSeconds   int            `json:"timeoutSeconds" binding:"omitempty,min=1,max=300"`
+	IntervalSeconds  int            `json:"intervalSeconds" binding:"omitempty,min=10,max=86400"`
+	FailureThreshold int            `json:"failureThreshold" binding:"omitempty,min=1,max=100"`
+	Enabled          bool           `json:"enabled"`
+	Status           CheckStatus    `json:"status"`
+	ServiceID        string         `json:"serviceId,omitempty"`
+	Tags             []string       `json:"tags,omitempty"`
+	Config           map[string]any `json:"config,omitempty"`
 	// Regions lists the worker regions that should execute this monitor.
 	// Empty defaults to ["default"]. RegionConfirmationThreshold sets the
 	// minimum number of regions that must agree on a failure before an
 	// incident opens — kills false positives from a single flaky vantage.
-	Regions                      []string `json:"regions,omitempty"`
-	RegionConfirmationThreshold  int      `json:"regionConfirmationThreshold,omitempty"`
-	CreatedAt                    time.Time `json:"createdAt"`
-	UpdatedAt                    time.Time `json:"updatedAt"`
+	Regions                     []string  `json:"regions,omitempty"`
+	RegionConfirmationThreshold int       `json:"regionConfirmationThreshold,omitempty"`
+	CreatedAt                   time.Time `json:"createdAt"`
+	UpdatedAt                   time.Time `json:"updatedAt"`
 }
 
 type CheckResult struct {
-	ID                  string      `json:"id"`
-	OrganizationID      string      `json:"organizationId"`
-	MonitorID           string      `json:"monitorId"`
-	Status              CheckStatus `json:"status"`
-	Success             bool        `json:"success"`
-	ResponseTimeMS      int64       `json:"responseTimeMs"`
-	StatusCode          int         `json:"statusCode"`
-	Error               string      `json:"error,omitempty"`
-	CheckedAt           time.Time   `json:"checkedAt"`
-	DNSMS               int64       `json:"dnsMs"`
-	TCPConnectMS        int64       `json:"tcpConnectMs"`
-	TLSHandshakeMS      int64       `json:"tlsHandshakeMs"`
-	TimeToFirstByteMS   int64       `json:"timeToFirstByteMs"`
-	TotalMS             int64       `json:"totalMs"`
-	ResponseSnippet     string      `json:"responseSnippet,omitempty"`
-	ConsecutiveFailures int         `json:"consecutiveFailures,omitempty"`
+	ID                    string         `json:"id"`
+	OrganizationID        string         `json:"organizationId"`
+	MonitorID             string         `json:"monitorId"`
+	Status                CheckStatus    `json:"status"`
+	Success               bool           `json:"success"`
+	ResponseTimeMS        int64          `json:"responseTimeMs"`
+	StatusCode            int            `json:"statusCode"`
+	Error                 string         `json:"error,omitempty"`
+	CheckedAt             time.Time      `json:"checkedAt"`
+	DNSMS                 int64          `json:"dnsMs"`
+	TCPConnectMS          int64          `json:"tcpConnectMs"`
+	TLSHandshakeMS        int64          `json:"tlsHandshakeMs"`
+	TimeToFirstByteMS     int64          `json:"timeToFirstByteMs"`
+	TotalMS               int64          `json:"totalMs"`
+	ResponseSnippet       string         `json:"responseSnippet,omitempty"`
+	ConsecutiveFailures   int            `json:"consecutiveFailures,omitempty"`
+	MaintenanceSuppressed bool           `json:"maintenanceSuppressed,omitempty"`
+	Metadata              map[string]any `json:"metadata,omitempty"`
 	// DomainExpiresAt is populated by the Domain checker only. Nil for
 	// every other check type.
 	DomainExpiresAt *time.Time `json:"domainExpiresAt,omitempty"`
@@ -101,17 +109,17 @@ type Incident struct {
 }
 
 type NotificationChannel struct {
-	ID             string         `json:"id"`
-	OrganizationID string         `json:"organizationId"`
-	Name           string         `json:"name" binding:"required,min=1,max=120"`
-	Type           string         `json:"type" binding:"required,oneof=webhook slack email pagerduty push"`
+	ID             string `json:"id"`
+	OrganizationID string `json:"organizationId"`
+	Name           string `json:"name" binding:"required,min=1,max=120"`
+	Type           string `json:"type" binding:"required,oneof=webhook slack email smtp pagerduty push discord teams telegram google_chat"`
 	// URL is kept for backwards-compat with webhook channels; new
 	// integrations carry their config in Config jsonb.
-	URL       string                 `json:"url,omitempty" binding:"omitempty,url,max=2048"`
-	Config    map[string]any         `json:"config,omitempty"`
-	Enabled   bool                   `json:"enabled"`
-	CreatedAt time.Time              `json:"createdAt"`
-	UpdatedAt time.Time              `json:"updatedAt"`
+	URL       string         `json:"url,omitempty" binding:"omitempty,url,max=2048"`
+	Config    map[string]any `json:"config,omitempty"`
+	Enabled   bool           `json:"enabled"`
+	CreatedAt time.Time      `json:"createdAt"`
+	UpdatedAt time.Time      `json:"updatedAt"`
 }
 
 // PushDevice mirrors a mobile-app installation that wants incident
@@ -168,12 +176,33 @@ type OverviewStats struct {
 }
 
 type ResultFilter struct {
-	MonitorID     string
-	Status        string
-	CheckedAfter  *time.Time
-	CheckedBefore *time.Time
-	Limit         int
-	Offset        int
+	MonitorID          string
+	ServiceID          string
+	StatusPageID       string
+	Status             string
+	CheckedAfter       *time.Time
+	CheckedBefore      *time.Time
+	ExcludeMaintenance bool
+	Limit              int
+	Offset             int
+}
+
+type MonitorFilter struct {
+	Tag       string
+	ServiceID string
+	Type      string
+	Status    string
+	Enabled   *bool
+}
+
+type Service struct {
+	ID             string    `json:"id"`
+	OrganizationID string    `json:"organizationId"`
+	Name           string    `json:"name" binding:"required,min=1,max=120"`
+	Slug           string    `json:"slug" binding:"required,min=1,max=120"`
+	Description    string    `json:"description,omitempty" binding:"omitempty,max=2048"`
+	CreatedAt      time.Time `json:"createdAt"`
+	UpdatedAt      time.Time `json:"updatedAt"`
 }
 
 // Organization represents a Clerk Organization mirrored locally so we can
@@ -181,13 +210,13 @@ type ResultFilter struct {
 // on every request. ClerkOrgID is the foreign identifier from Clerk and may
 // be empty for the seeded default org or any org created administratively.
 type Organization struct {
-	ID          string    `json:"id"`
-	ClerkOrgID  string    `json:"clerkOrgId,omitempty"`
-	Name        string    `json:"name"`
-	Slug        string    `json:"slug"`
-	Plan        string    `json:"plan"`
-	CreatedAt   time.Time `json:"createdAt"`
-	UpdatedAt   time.Time `json:"updatedAt"`
+	ID         string    `json:"id"`
+	ClerkOrgID string    `json:"clerkOrgId,omitempty"`
+	Name       string    `json:"name"`
+	Slug       string    `json:"slug"`
+	Plan       string    `json:"plan"`
+	CreatedAt  time.Time `json:"createdAt"`
+	UpdatedAt  time.Time `json:"updatedAt"`
 }
 
 // User mirrors a Clerk user record. The local id is a uuid we own; the
@@ -229,42 +258,42 @@ type MembershipDetail struct {
 // ping doesn't arrive within ExpectedIntervalSeconds + GraceSeconds the
 // monitor flips to down on the next scheduler tick.
 type Heartbeat struct {
-	MonitorID                string     `json:"monitorId"`
-	TokenHash                string     `json:"-"`
-	ExpectedIntervalSeconds  int        `json:"expectedIntervalSeconds"`
-	GraceSeconds             int        `json:"graceSeconds"`
-	LastPingAt               *time.Time `json:"lastPingAt,omitempty"`
-	LastPingSourceIP         string     `json:"lastPingSourceIp,omitempty"`
-	LastPingUserAgent        string     `json:"lastPingUserAgent,omitempty"`
-	CreatedAt                time.Time  `json:"createdAt"`
-	UpdatedAt                time.Time  `json:"updatedAt"`
+	MonitorID               string     `json:"monitorId"`
+	TokenHash               string     `json:"-"`
+	ExpectedIntervalSeconds int        `json:"expectedIntervalSeconds"`
+	GraceSeconds            int        `json:"graceSeconds"`
+	LastPingAt              *time.Time `json:"lastPingAt,omitempty"`
+	LastPingSourceIP        string     `json:"lastPingSourceIp,omitempty"`
+	LastPingUserAgent       string     `json:"lastPingUserAgent,omitempty"`
+	CreatedAt               time.Time  `json:"createdAt"`
+	UpdatedAt               time.Time  `json:"updatedAt"`
 }
 
 // MultistepScript holds the JSON DSL describing a sequence of HTTP
 // requests with assertions and variable extraction. See
 // internal/checks/multistep.go for the semantic.
 type MultistepScript struct {
-	MonitorID string          `json:"monitorId"`
-	Steps     MultistepSteps  `json:"steps"`
-	CreatedAt time.Time       `json:"createdAt"`
-	UpdatedAt time.Time       `json:"updatedAt"`
+	MonitorID string         `json:"monitorId"`
+	Steps     MultistepSteps `json:"steps"`
+	CreatedAt time.Time      `json:"createdAt"`
+	UpdatedAt time.Time      `json:"updatedAt"`
 }
 
 // MultistepSteps is the parsed payload of MultistepScript.Steps. Stored
 // as jsonb in Postgres but materialized to typed values for the checker.
 type MultistepSteps struct {
-	Steps []MultistepStep `json:"steps"`
+	Steps []MultistepStep   `json:"steps"`
 	Vars  map[string]string `json:"vars,omitempty"`
 }
 
 type MultistepStep struct {
-	Name       string            `json:"name,omitempty"`
-	Method     string            `json:"method"`
-	URL        string            `json:"url"`
-	Headers    map[string]string `json:"headers,omitempty"`
-	Body       string            `json:"body,omitempty"`
+	Name       string               `json:"name,omitempty"`
+	Method     string               `json:"method"`
+	URL        string               `json:"url"`
+	Headers    map[string]string    `json:"headers,omitempty"`
+	Body       string               `json:"body,omitempty"`
 	Assertions []MultistepAssertion `json:"assert,omitempty"`
-	Extract    map[string]string `json:"extract,omitempty"` // varName → jsonpath
+	Extract    map[string]string    `json:"extract,omitempty"` // varName → jsonpath
 }
 
 type MultistepAssertion struct {
@@ -299,6 +328,10 @@ type StatusPage struct {
 	CustomDomainVerified bool           `json:"customDomainVerified"`
 	Theme                map[string]any `json:"theme,omitempty"`
 	Published            bool           `json:"published"`
+	LogoURL              string         `json:"logoUrl,omitempty"`
+	PrimaryColor         string         `json:"primaryColor,omitempty"`
+	Public               bool           `json:"public"`
+	NoIndex              bool           `json:"noIndex"`
 	CreatedAt            time.Time      `json:"createdAt"`
 	UpdatedAt            time.Time      `json:"updatedAt"`
 }
@@ -307,15 +340,19 @@ type StatusPage struct {
 // page (e.g. "API", "Web App"). The component's status is the worst
 // status across its constituent monitors.
 type StatusPageComponent struct {
-	ID           string    `json:"id"`
-	StatusPageID string    `json:"statusPageId"`
-	Name         string    `json:"name"`
-	Description  string    `json:"description,omitempty"`
-	Position     int       `json:"position"`
-	MonitorIDs   []string  `json:"monitorIds"`
-	GroupName    string    `json:"groupName,omitempty"`
-	CreatedAt    time.Time `json:"createdAt"`
-	UpdatedAt    time.Time `json:"updatedAt"`
+	ID           string      `json:"id"`
+	StatusPageID string      `json:"statusPageId"`
+	Name         string      `json:"name"`
+	Description  string      `json:"description,omitempty"`
+	Position     int         `json:"position"`
+	MonitorIDs   []string    `json:"monitorIds"`
+	GroupName    string      `json:"groupName,omitempty"`
+	ServiceID    string      `json:"serviceId,omitempty"`
+	ManualStatus CheckStatus `json:"manualStatus,omitempty"`
+	OrderIndex   int         `json:"orderIndex"`
+	Status       CheckStatus `json:"status,omitempty"`
+	CreatedAt    time.Time   `json:"createdAt"`
+	UpdatedAt    time.Time   `json:"updatedAt"`
 }
 
 // MaintenanceWindow declares a span when checks should be suppressed.
@@ -323,18 +360,23 @@ type StatusPageComponent struct {
 // (e.g. "FREQ=WEEKLY;BYDAY=TU"). status_page_id, when set, surfaces a
 // banner on the named status page during the window.
 type MaintenanceWindow struct {
-	ID                 string     `json:"id"`
-	OrganizationID     string     `json:"organizationId"`
-	Name               string     `json:"name"`
-	Description        string     `json:"description,omitempty"`
-	StartsAt           time.Time  `json:"startsAt"`
-	EndsAt             time.Time  `json:"endsAt"`
-	RecurrenceRRule    string     `json:"recurrenceRrule,omitempty"`
-	StatusPageID       string     `json:"statusPageId,omitempty"`
-	CreatedByUserID    string     `json:"createdByUserId,omitempty"`
-	MonitorIDs         []string   `json:"monitorIds"`
-	CreatedAt          time.Time  `json:"createdAt"`
-	UpdatedAt          time.Time  `json:"updatedAt"`
+	ID              string    `json:"id"`
+	OrganizationID  string    `json:"organizationId"`
+	Name            string    `json:"name"`
+	Description     string    `json:"description,omitempty"`
+	StartsAt        time.Time `json:"startsAt"`
+	EndsAt          time.Time `json:"endsAt"`
+	Timezone        string    `json:"timezone,omitempty"`
+	Recurrence      string    `json:"recurrence,omitempty"`
+	RecurrenceRRule string    `json:"recurrenceRrule,omitempty"`
+	StatusPageID    string    `json:"statusPageId,omitempty"`
+	CreatedByUserID string    `json:"createdByUserId,omitempty"`
+	Enabled         bool      `json:"enabled"`
+	MonitorIDs      []string  `json:"monitorIds"`
+	TagNames        []string  `json:"tagNames,omitempty"`
+	Active          bool      `json:"active,omitempty"`
+	CreatedAt       time.Time `json:"createdAt"`
+	UpdatedAt       time.Time `json:"updatedAt"`
 }
 
 // Tag is a user-defined label that can be attached to monitors. Tag
@@ -343,24 +385,71 @@ type MaintenanceWindow struct {
 type Tag struct {
 	ID             string    `json:"id"`
 	OrganizationID string    `json:"organizationId"`
-	Name           string    `json:"name"`
-	Color          string    `json:"color"`
+	Name           string    `json:"name" binding:"required,min=1,max=64"`
+	Color          string    `json:"color" binding:"omitempty,len=7,startswith=#"`
 	CreatedAt      time.Time `json:"createdAt"`
+}
+
+type PublicStatusPage struct {
+	Page            StatusPage            `json:"page"`
+	Status          CheckStatus           `json:"status"`
+	Components      []StatusPageComponent `json:"components"`
+	ActiveIncidents []Incident            `json:"activeIncidents"`
+	RecentIncidents []Incident            `json:"recentIncidents"`
+	Uptime24H       float64               `json:"uptime24h"`
+	GeneratedAt     time.Time             `json:"generatedAt"`
+}
+
+type HeartbeatEvent struct {
+	ID         string         `json:"id"`
+	MonitorID  string         `json:"monitorId"`
+	Status     CheckStatus    `json:"status,omitempty"`
+	Message    string         `json:"message,omitempty"`
+	DurationMS int64          `json:"durationMs,omitempty"`
+	Metadata   map[string]any `json:"metadata,omitempty"`
+	CreatedAt  time.Time      `json:"createdAt"`
+}
+
+type UptimeReport struct {
+	MonitorID         string    `json:"monitorId,omitempty"`
+	ServiceID         string    `json:"serviceId,omitempty"`
+	StatusPageID      string    `json:"statusPageId,omitempty"`
+	From              time.Time `json:"from"`
+	To                time.Time `json:"to"`
+	Checks            int       `json:"checks"`
+	SuccessfulChecks  int       `json:"successfulChecks"`
+	UptimePercentage  float64   `json:"uptimePercentage"`
+	DowntimeMinutes   float64   `json:"downtimeMinutes"`
+	AverageResponseMS float64   `json:"averageResponseMs"`
+	P50ResponseMS     float64   `json:"p50ResponseMs"`
+	P95ResponseMS     float64   `json:"p95ResponseMs"`
+	P99ResponseMS     float64   `json:"p99ResponseMs"`
+	IncidentCount     int       `json:"incidentCount"`
+	GeneratedAt       time.Time `json:"generatedAt"`
+}
+
+type UptimeReportFilter struct {
+	MonitorID          string
+	ServiceID          string
+	StatusPageID       string
+	From               time.Time
+	To                 time.Time
+	ExcludeMaintenance bool
 }
 
 // SLAReport is the response shape of the /api/v1/sla/* endpoints.
 // MaintenanceSeconds is subtracted from RawDownSeconds to produce
 // BillableDownSeconds, which is what most SLA contracts measure.
 type SLAReport struct {
-	MonitorID             string    `json:"monitorId,omitempty"`
-	Period                string    `json:"period"`
-	From                  time.Time `json:"from"`
-	To                    time.Time `json:"to"`
-	UptimePercentage      float64   `json:"uptimePercentage"`
-	RawDownSeconds        int64     `json:"rawDownSeconds"`
-	MaintenanceSeconds    int64     `json:"maintenanceSeconds"`
-	BillableDownSeconds   int64     `json:"billableDownSeconds"`
-	IncidentCount         int       `json:"incidents"`
+	MonitorID           string    `json:"monitorId,omitempty"`
+	Period              string    `json:"period"`
+	From                time.Time `json:"from"`
+	To                  time.Time `json:"to"`
+	UptimePercentage    float64   `json:"uptimePercentage"`
+	RawDownSeconds      int64     `json:"rawDownSeconds"`
+	MaintenanceSeconds  int64     `json:"maintenanceSeconds"`
+	BillableDownSeconds int64     `json:"billableDownSeconds"`
+	IncidentCount       int       `json:"incidents"`
 }
 
 // WorkerHeartbeat is the periodic liveness + state snapshot a worker
@@ -372,19 +461,19 @@ type SLAReport struct {
 // JobsFailed are monotonic counters scoped to the worker's lifetime — they
 // reset when the process restarts.
 type WorkerHeartbeat struct {
-	InstanceID     string    `json:"instanceId"`
-	Hostname       string    `json:"hostname"`
-	Version        string    `json:"version"`
-	Region         string    `json:"region,omitempty"`
-	StartedAt      time.Time `json:"startedAt"`
-	LastSeenAt     time.Time `json:"lastSeenAt"`
-	WorkerCount    int       `json:"workerCount"`
-	ActiveJobs     int       `json:"activeJobs"`
-	QueueDepth     int       `json:"queueDepth"`
-	QueueCapacity  int       `json:"queueCapacity"`
-	JobsCompleted  int64     `json:"jobsCompleted"`
-	JobsFailed     int64     `json:"jobsFailed"`
-	InFlight       []string  `json:"inFlight"`
+	InstanceID    string    `json:"instanceId"`
+	Hostname      string    `json:"hostname"`
+	Version       string    `json:"version"`
+	Region        string    `json:"region,omitempty"`
+	StartedAt     time.Time `json:"startedAt"`
+	LastSeenAt    time.Time `json:"lastSeenAt"`
+	WorkerCount   int       `json:"workerCount"`
+	ActiveJobs    int       `json:"activeJobs"`
+	QueueDepth    int       `json:"queueDepth"`
+	QueueCapacity int       `json:"queueCapacity"`
+	JobsCompleted int64     `json:"jobsCompleted"`
+	JobsFailed    int64     `json:"jobsFailed"`
+	InFlight      []string  `json:"inFlight"`
 	// Stale is set by the API when LastSeenAt is older than the freshness
 	// window. Workers never write to it.
 	Stale bool `json:"stale,omitempty"`

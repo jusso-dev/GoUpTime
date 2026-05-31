@@ -64,10 +64,12 @@ type Options struct {
 type Registry struct {
 	HTTP      Checker
 	TCP       Checker
+	UDP       Checker
 	DNS       Checker
 	TLS       Checker
 	Heartbeat Checker
 	ICMP      Checker
+	Ping      Checker
 	Domain    Checker
 	Multistep Checker
 	Browser   Checker
@@ -86,10 +88,12 @@ func NewRegistry(opts Options) Registry {
 	return Registry{
 		HTTP:      HTTPChecker{Options: opts},
 		TCP:       TCPChecker{Options: opts},
+		UDP:       UDPChecker{Options: opts},
 		DNS:       DNSChecker{Options: opts},
 		TLS:       TLSChecker{Options: opts},
 		Heartbeat: HeartbeatChecker{Options: opts, Store: opts.HeartbeatStore},
 		ICMP:      ICMPChecker{Options: opts},
+		Ping:      PingChecker{Options: opts},
 		Domain:    DomainChecker{Options: opts},
 		Multistep: MultistepChecker{Options: opts, Store: opts.MultistepStore},
 		Browser:   BrowserChecker{Options: opts, Store: opts.BrowserStore, Redis: opts.Redis, Enabled: opts.BrowserEnabled},
@@ -98,10 +102,12 @@ func NewRegistry(opts Options) Registry {
 
 func (r Registry) For(monitorType models.MonitorType) (Checker, error) {
 	switch monitorType {
-	case models.MonitorHTTP, models.MonitorKeyword:
+	case models.MonitorHTTP, models.MonitorKeyword, models.MonitorAPI:
 		return r.HTTP, nil
 	case models.MonitorTCP:
 		return r.TCP, nil
+	case models.MonitorUDP:
+		return r.UDP, nil
 	case models.MonitorDNS:
 		return r.DNS, nil
 	case models.MonitorTLS:
@@ -110,6 +116,8 @@ func (r Registry) For(monitorType models.MonitorType) (Checker, error) {
 		return r.Heartbeat, nil
 	case models.MonitorICMP:
 		return r.ICMP, nil
+	case models.MonitorPing:
+		return r.Ping, nil
 	case models.MonitorDomain:
 		return r.Domain, nil
 	case models.MonitorMultistep:

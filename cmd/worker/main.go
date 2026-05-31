@@ -50,14 +50,18 @@ func run() int {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
-	pool, err := repository.Open(ctx, cfg.DatabaseURL, repository.DefaultPoolConfig())
+	db, err := repository.Open(ctx, cfg.DatabaseURL, repository.DefaultPoolConfig())
 	if err != nil {
 		logger.Error("database open failed", "error", err)
 		return 1
 	}
-	defer pool.Close()
+	defer func() {
+		if err := repository.Close(db); err != nil {
+			logger.Warn("database close failed", "error", err)
+		}
+	}()
 
-	store := repository.NewPostgresStore(pool)
+	store := repository.NewPostgresStore(db)
 	m := metrics.New()
 
 	// Redis is optional for the worker today (browser-check submission is

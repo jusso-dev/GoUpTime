@@ -51,13 +51,17 @@ func run() int {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
-	pool, err := repository.Open(ctx, cfg.DatabaseURL, repository.DefaultPoolConfig())
+	db, err := repository.Open(ctx, cfg.DatabaseURL, repository.DefaultPoolConfig())
 	if err != nil {
 		logger.Error("database open failed", "error", err)
 		return 1
 	}
-	defer pool.Close()
-	store := repository.NewPostgresStore(pool)
+	defer func() {
+		if err := repository.Close(db); err != nil {
+			logger.Warn("database close failed", "error", err)
+		}
+	}()
+	store := repository.NewPostgresStore(db)
 
 	redisOpts, err := redis.ParseURL(cfg.RedisURL)
 	if err != nil {

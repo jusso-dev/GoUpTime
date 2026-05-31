@@ -1,6 +1,6 @@
 // Package apierr defines sentinel errors used at service/storage boundaries
 // and helpers that map them to HTTP status codes. Keeping these in one place
-// avoids leaking driver-specific error types (pgx.ErrNoRows, etc.) into
+// avoids leaking storage-specific error types into
 // HTTP handlers and makes error responses consistent across the API surface.
 package apierr
 

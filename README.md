@@ -7,12 +7,13 @@ UpTime started as a small uptime-check API. This rebuild turns the same idea int
 ## Features
 
 - Gin REST API with `GET /health`, legacy `GET /health-check`, and legacy `POST /ping-endpoint`
-- HTTP, keyword, TCP, DNS, and TLS checks
+- HTTP, API assertion, keyword, TCP, UDP, DNS, TLS, domain-expiry, ping, and heartbeat checks
 - HTTP timing details through `httptrace`: DNS, TCP connect, TLS handshake, first byte, total duration
 - PostgreSQL tables for monitors, check results, incidents, notification channels, API keys, and audit logs
 - Worker process with goroutines, channels, context cancellation, duplicate-check avoidance, and graceful shutdown
 - Incident lifecycle: opens after `failureThreshold` consecutive failures and resolves on recovery
-- Webhook notification channels for incident open/resolve events
+- Webhook, SMTP, and chat notification channels for incident open/resolve events
+- Monitor tags, services, maintenance windows, public status pages, and uptime reports
 - API key authentication with hashed stored keys and a bootstrap admin key
 - Prometheus metrics for API requests, checks, incidents, and worker jobs
 - Docker Compose stack with API, worker, Postgres, Redis, Prometheus, and Grafana
@@ -23,7 +24,7 @@ These screenshots were captured from the live Docker Compose stack.
 
 ![Health endpoint showing PostgreSQL and Redis status](docs/screenshots/api-health.png)
 
-![Authenticated monitor API returning seeded monitors updated by the worker](docs/screenshots/api-monitors.png)
+![Authenticated monitor API returning monitors updated by the worker](docs/screenshots/api-monitors.png)
 
 ![Legacy ping endpoint returning HTTP tracing timings](docs/screenshots/ping-endpoint.png)
 
@@ -51,7 +52,7 @@ flowchart LR
 
 - Go 1.22+
 - Gin
-- PostgreSQL via `pgx`
+- PostgreSQL via GORM
 - Redis
 - Prometheus client library
 - Structured logging with `slog`
@@ -78,7 +79,7 @@ export DATABASE_URL='postgres://uptime:uptime@localhost:5432/uptime?sslmode=disa
 export REDIS_URL='redis://localhost:6379/0'
 export UPTIME_BOOTSTRAP_API_KEY='dev_admin_key'
 
-make migrate
+make migrate # runs GORM-managed schema migration
 go run ./cmd/api
 go run ./cmd/worker
 ```
@@ -106,7 +107,6 @@ go run ./cmd/worker
 | `API_READ_HEADER_TIMEOUT_SECONDS` | `5` | API `http.Server` read header timeout |
 | `API_WRITE_TIMEOUT_SECONDS` | `30` | API `http.Server` write timeout |
 | `MAX_REQUEST_BODY_BYTES` | `1048576` | Maximum accepted request body size in bytes |
-| `MIGRATIONS_DIR` | `migrations` | Directory containing `*.up.sql` files |
 
 ## API Examples
 
@@ -168,10 +168,15 @@ Redis is part of the local stack and health reporting. The current worker uses l
 ## Check Types
 
 - `http`: validates URL, blocks private targets by default, supports `GET`/`HEAD`, expected status, redirects disabled, body snippets, and timing breakdowns.
+- `api`: HTTP check with methods, headers, body, bearer/basic auth, and JSON assertion config.
 - `keyword`: HTTP check plus expected keyword matching.
 - `tcp`: checks `host:port` reachability with `net.Dialer`.
+- `udp`: sends a datagram payload and can validate an expected response snippet.
 - `dns`: resolves a hostname with Go's resolver.
 - `tls`: connects to a TLS endpoint and marks certificates near expiry as degraded.
+- `domain`: checks domain expiration through RDAP.
+- `ping`: TCP reachability ping for environments where raw ICMP is not available.
+- `heartbeat`: records inbound pings and opens incidents when check-ins are late or missing.
 
 ## Incident Lifecycle
 
@@ -215,8 +220,7 @@ The test suite covers HTTP checker success, timeout, expected-status mismatch, S
 ## Roadmap
 
 - Redis-backed distributed queue and locks
-- Slack, Discord, and SMTP notification channels
-- Public status pages
+- Browser transaction monitoring
 - Multi-tenant organisations
 - Remote monitoring agents
 - Optional React/Next.js dashboard

@@ -38,7 +38,6 @@ RUN apk add --no-cache ca-certificates tzdata && \
     adduser  -S -u 65532 -G uptime uptime
 
 COPY --from=build /out/uptime-api /out/uptime-worker /out/uptime-scheduler /out/uptime-migrate /app/
-COPY migrations /app/migrations
 
 USER 65532:65532
 EXPOSE 8008 8009
