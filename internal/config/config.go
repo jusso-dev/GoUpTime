@@ -22,6 +22,7 @@ type Config struct {
 	DatabaseURL                string
 	RedisURL                   string
 	BootstrapAPIKey            string
+	BootstrapOrgID             string
 	AllowPrivateTargets        bool
 	CheckWorkerCount           int
 	DefaultCheckTimeoutSeconds int
@@ -36,6 +37,42 @@ type Config struct {
 	APIWriteTimeoutSec         int
 	MaxRequestBodyBytes        int64
 	SchedulerTickSeconds       int
+
+	// Clerk authentication. When ClerkEnabled is true the API verifies Clerk
+	// session JWTs in addition to the existing API-key auth path. The
+	// webhook secret is required to authenticate Clerk → app webhooks that
+	// keep the local users/organizations mirror in sync.
+	ClerkEnabled          bool
+	ClerkIssuer           string
+	ClerkSecretKey        string
+	ClerkPublishableKey   string
+	ClerkWebhookSecret    string
+
+	// CORSAllowedOrigins is the explicit allow-list for the mobile/web
+	// clients. Development mode (APP_ENV != production) additionally allows
+	// localhost and Expo (exp://) origins for convenience.
+	CORSAllowedOrigins []string
+
+	// Check-type gates. Browser checks need the Playwright sidecar to be
+	// running; ICMP needs ping_group_range/CAP_NET_RAW on the host. Both
+	// default off so a fresh install doesn't emit spurious failures.
+	BrowserCheckEnabled bool
+	ICMPCheckEnabled    bool
+
+	// AppBaseURL is the public-facing URL of the API. Used to build
+	// heartbeat ping URLs and incident deep links surfaced to integrations
+	// (Slack, email).
+	AppBaseURL string
+
+	// WorkerRegion is the label this worker process attaches to results,
+	// heartbeats, and the Redis queue it consumes from. Defaults to
+	// "default" for single-region installs.
+	WorkerRegion string
+
+	// ExpoAccessToken is an optional bearer token from
+	// https://expo.dev/accounts/[org]/settings/access-tokens that raises
+	// the per-second push rate limit. Empty is fine for low-volume sends.
+	ExpoAccessToken string
 }
 
 // IsProduction returns true when APP_ENV indicates a non-development
@@ -61,9 +98,19 @@ func Load() (Config, error) {
 		DatabaseURL:                getenv("DATABASE_URL", "postgres://uptime:uptime@localhost:5432/uptime?sslmode=disable"),
 		RedisURL:                   getenv("REDIS_URL", "redis://localhost:6379/0"),
 		BootstrapAPIKey:            getenv("UPTIME_BOOTSTRAP_API_KEY", ""),
+		BootstrapOrgID:             getenv("BOOTSTRAP_ORG_ID", "00000000-0000-0000-0000-000000000001"),
 		HTTPUserAgent:              getenv("HTTP_USER_AGENT", "UpTime-Monitor/1.0"),
 		WebhookSigningSecret:       getenv("WEBHOOK_SIGNING_SECRET", ""),
+		ClerkIssuer:                strings.TrimRight(getenv("CLERK_ISSUER", ""), "/"),
+		ClerkSecretKey:             getenv("CLERK_SECRET_KEY", ""),
+		ClerkPublishableKey:        getenv("CLERK_PUBLISHABLE_KEY", ""),
+		ClerkWebhookSecret:         getenv("CLERK_WEBHOOK_SECRET", ""),
+		AppBaseURL:                 strings.TrimRight(getenv("APP_BASE_URL", "http://localhost:8008"), "/"),
+		WorkerRegion:               getenv("WORKER_REGION", "default"),
+		ExpoAccessToken:            getenv("EXPO_ACCESS_TOKEN", ""),
 	}
+
+	cfg.CORSAllowedOrigins = splitCSV(getenv("CORS_ALLOWED_ORIGINS", ""))
 
 	level, err := parseLogLevel(getenv("LOG_LEVEL", "info"))
 	if err != nil {
@@ -72,6 +119,19 @@ func Load() (Config, error) {
 	cfg.LogLevel = level
 
 	cfg.AllowPrivateTargets, err = getenvBool("ALLOW_PRIVATE_TARGETS", false)
+	if err != nil {
+		return Config{}, err
+	}
+
+	cfg.ClerkEnabled, err = getenvBool("CLERK_ENABLED", false)
+	if err != nil {
+		return Config{}, err
+	}
+	cfg.BrowserCheckEnabled, err = getenvBool("BROWSER_CHECK_ENABLED", false)
+	if err != nil {
+		return Config{}, err
+	}
+	cfg.ICMPCheckEnabled, err = getenvBool("ICMP_ENABLED", false)
 	if err != nil {
 		return Config{}, err
 	}
@@ -139,6 +199,18 @@ func Load() (Config, error) {
 	}
 	if cfg.IsProduction() && cfg.AllowPrivateTargets {
 		return Config{}, errors.New("ALLOW_PRIVATE_TARGETS=true is not permitted in production")
+	}
+
+	if cfg.ClerkEnabled {
+		if cfg.ClerkIssuer == "" {
+			return Config{}, errors.New("CLERK_ISSUER must be set when CLERK_ENABLED=true")
+		}
+		if cfg.ClerkSecretKey == "" {
+			return Config{}, errors.New("CLERK_SECRET_KEY must be set when CLERK_ENABLED=true")
+		}
+		if cfg.ClerkWebhookSecret == "" && cfg.IsProduction() {
+			return Config{}, errors.New("CLERK_WEBHOOK_SECRET must be set in production when CLERK_ENABLED=true")
+		}
 	}
 
 	return cfg, nil
@@ -258,6 +330,23 @@ func getenvInt(key string, fallback int) (int, error) {
 		return fallback, fmt.Errorf("%s=%q is not a valid integer: %w", key, value, err)
 	}
 	return parsed, nil
+}
+
+// splitCSV trims and returns the non-empty entries of a comma-separated list.
+// Used for env vars that take multiple values (e.g. CORS_ALLOWED_ORIGINS).
+func splitCSV(value string) []string {
+	if value == "" {
+		return nil
+	}
+	parts := strings.Split(value, ",")
+	out := make([]string, 0, len(parts))
+	for _, p := range parts {
+		p = strings.TrimSpace(p)
+		if p != "" {
+			out = append(out, p)
+		}
+	}
+	return out
 }
 
 func getenvInt64(key string, fallback int64) (int64, error) {

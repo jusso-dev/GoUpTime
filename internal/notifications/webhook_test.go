@@ -15,6 +15,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5"
+
 	"github.com/jusso-dev/uptime/internal/models"
 )
 
@@ -111,6 +113,127 @@ func (r *recordingStore) ListWorkerHeartbeats(context.Context, time.Time) ([]mod
 	return nil, nil
 }
 func (r *recordingStore) DeleteWorkerHeartbeat(context.Context, string) error { return nil }
+func (r *recordingStore) AcknowledgeIncident(context.Context, string, string) (models.Incident, error) {
+	return models.Incident{}, nil
+}
+func (r *recordingStore) GetOrganization(context.Context, string) (models.Organization, error) {
+	return models.Organization{}, nil
+}
+func (r *recordingStore) GetOrganizationByClerkID(context.Context, string) (models.Organization, error) {
+	return models.Organization{}, nil
+}
+func (r *recordingStore) UpsertOrganization(context.Context, models.Organization) (models.Organization, error) {
+	return models.Organization{}, nil
+}
+func (r *recordingStore) DeleteOrganizationByClerkID(context.Context, string) error { return nil }
+func (r *recordingStore) GetUserByID(context.Context, string) (models.User, error) {
+	return models.User{}, nil
+}
+func (r *recordingStore) GetUserByClerkID(context.Context, string) (models.User, error) {
+	return models.User{}, nil
+}
+func (r *recordingStore) UpsertUser(context.Context, models.User) (models.User, error) {
+	return models.User{}, nil
+}
+func (r *recordingStore) DeleteUserByClerkID(context.Context, string) error { return nil }
+func (r *recordingStore) ListMembershipsForUser(context.Context, string) ([]models.MembershipDetail, error) {
+	return nil, nil
+}
+func (r *recordingStore) UpsertMembership(context.Context, models.Membership) error { return nil }
+func (r *recordingStore) DeleteMembership(context.Context, string, string) error    { return nil }
+func (r *recordingStore) RecordWebhookEvent(context.Context, string, string, []byte) (bool, error) {
+	return true, nil
+}
+func (r *recordingStore) GetHeartbeat(context.Context, string) (models.Heartbeat, error) {
+	return models.Heartbeat{}, nil
+}
+func (r *recordingStore) SetHeartbeat(context.Context, models.Heartbeat) (models.Heartbeat, error) {
+	return models.Heartbeat{}, nil
+}
+func (r *recordingStore) DeleteHeartbeat(context.Context, string) error { return nil }
+func (r *recordingStore) RecordHeartbeatPing(context.Context, string, string, string) (string, error) {
+	return "", nil
+}
+func (r *recordingStore) GetMultistepScript(context.Context, string) (models.MultistepScript, error) {
+	return models.MultistepScript{}, nil
+}
+func (r *recordingStore) SetMultistepScript(context.Context, models.MultistepScript) (models.MultistepScript, error) {
+	return models.MultistepScript{}, nil
+}
+func (r *recordingStore) GetBrowserScript(context.Context, string) (models.BrowserScript, error) {
+	return models.BrowserScript{}, nil
+}
+func (r *recordingStore) SetBrowserScript(context.Context, models.BrowserScript) (models.BrowserScript, error) {
+	return models.BrowserScript{}, nil
+}
+func (r *recordingStore) EnqueueNotification(context.Context, models.OutboxEntry) (models.OutboxEntry, error) {
+	return models.OutboxEntry{}, nil
+}
+func (r *recordingStore) ClaimPendingNotifications(context.Context, int) ([]models.OutboxEntry, pgx.Tx, error) {
+	return nil, nil, nil
+}
+func (r *recordingStore) MarkNotificationDelivered(context.Context, pgx.Tx, string) error {
+	return nil
+}
+func (r *recordingStore) MarkNotificationRetry(context.Context, pgx.Tx, string, int, int, string, time.Time) error {
+	return nil
+}
+func (r *recordingStore) UpsertPushDevice(context.Context, models.PushDevice) (models.PushDevice, error) {
+	return models.PushDevice{}, nil
+}
+func (r *recordingStore) DeletePushDevice(context.Context, string) error { return nil }
+func (r *recordingStore) ListPushDevicesForOrg(context.Context, string) ([]models.PushDevice, error) {
+	return nil, nil
+}
+func (r *recordingStore) ListPushDevicesForUser(context.Context, string) ([]models.PushDevice, error) {
+	return nil, nil
+}
+func (r *recordingStore) ListStatusPages(context.Context) ([]models.StatusPage, error) { return nil, nil }
+func (r *recordingStore) CreateStatusPage(context.Context, models.StatusPage) (models.StatusPage, error) {
+	return models.StatusPage{}, nil
+}
+func (r *recordingStore) GetStatusPageBySlug(context.Context, string) (models.StatusPage, error) {
+	return models.StatusPage{}, nil
+}
+func (r *recordingStore) GetStatusPageByDomain(context.Context, string) (models.StatusPage, error) {
+	return models.StatusPage{}, nil
+}
+func (r *recordingStore) DeleteStatusPage(context.Context, string) error { return nil }
+func (r *recordingStore) ListStatusPageComponents(context.Context, string) ([]models.StatusPageComponent, error) {
+	return nil, nil
+}
+func (r *recordingStore) UpsertStatusPageComponent(context.Context, models.StatusPageComponent) (models.StatusPageComponent, error) {
+	return models.StatusPageComponent{}, nil
+}
+func (r *recordingStore) DeleteStatusPageComponent(context.Context, string) error { return nil }
+func (r *recordingStore) GetMonitorsByIDs(context.Context, string, []string) ([]models.Monitor, error) {
+	return nil, nil
+}
+func (r *recordingStore) ListMaintenanceWindows(context.Context) ([]models.MaintenanceWindow, error) {
+	return nil, nil
+}
+func (r *recordingStore) CreateMaintenanceWindow(context.Context, models.MaintenanceWindow) (models.MaintenanceWindow, error) {
+	return models.MaintenanceWindow{}, nil
+}
+func (r *recordingStore) DeleteMaintenanceWindow(context.Context, string) error { return nil }
+func (r *recordingStore) IsMonitorInMaintenance(context.Context, string, time.Time) (bool, error) {
+	return false, nil
+}
+func (r *recordingStore) ListTags(context.Context) ([]models.Tag, error) { return nil, nil }
+func (r *recordingStore) CreateTag(context.Context, models.Tag) (models.Tag, error) {
+	return models.Tag{}, nil
+}
+func (r *recordingStore) DeleteTag(context.Context, string) error                { return nil }
+func (r *recordingStore) SetMonitorTags(context.Context, string, []string) error { return nil }
+func (r *recordingStore) ListMonitorsByTags(context.Context, []string) ([]models.Monitor, error) {
+	return nil, nil
+}
+func (r *recordingStore) SLAReportForMonitor(context.Context, string, time.Time, time.Time) (models.SLAReport, error) {
+	return models.SLAReport{}, nil
+}
+func (r *recordingStore) SLAReportForOrg(context.Context, time.Time, time.Time) (models.SLAReport, error) {
+	return models.SLAReport{}, nil
+}
 
 func TestDeliverSignsAndRecordsSuccess(t *testing.T) {
 	secret := "shhh-this-is-secret"

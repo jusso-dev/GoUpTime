@@ -234,3 +234,45 @@ func (s *Service) sign(payload []byte) string {
 	mac.Write(payload)
 	return hex.EncodeToString(mac.Sum(nil))
 }
+
+// --- Provider implementation (used by the new dispatcher) ---------------
+//
+// WebhookProvider wraps Service so the dispatcher can route generic
+// "webhook" channels through the same battle-tested code path that
+// existing customers rely on.
+
+type WebhookProvider struct {
+	svc *Service
+}
+
+func NewWebhookProvider(svc *Service) *WebhookProvider { return &WebhookProvider{svc: svc} }
+
+func (p *WebhookProvider) Type() string { return "webhook" }
+
+func (p *WebhookProvider) Send(ctx context.Context, channel models.NotificationChannel, event Event) (Delivery, error) {
+	// Prefer config.webhook_url; fall back to top-level URL for legacy rows.
+	url := channel.URL
+	if v, ok := channel.Config["webhook_url"].(string); ok && v != "" {
+		url = v
+	}
+	if url == "" {
+		return Delivery{}, fmt.Errorf("webhook channel %s: url missing", channel.ID)
+	}
+	payload, err := json.Marshal(IncidentEvent{
+		Event:       event.Type,
+		IncidentID:  event.IncidentID,
+		MonitorID:   event.MonitorID,
+		MonitorName: event.MonitorName,
+		Status:      event.Status,
+		Reason:      event.Reason,
+	})
+	if err != nil {
+		return Delivery{}, fmt.Errorf("encode webhook payload: %w", err)
+	}
+	status, errText, retryable := p.svc.postOnce(ctx, url, payload, p.svc.sign(payload), event.Type, 0)
+	d := Delivery{StatusCode: status, Retryable: retryable}
+	if errText != "" {
+		return d, fmt.Errorf("%s", errText)
+	}
+	return d, nil
+}

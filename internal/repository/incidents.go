@@ -13,11 +13,23 @@ import (
 	"github.com/jusso-dev/uptime/internal/models"
 )
 
-const incidentColumns = `id, monitor_id, status, started_at, resolved_at, reason,
+const incidentColumns = `id, organization_id, monitor_id, status, started_at, resolved_at,
+	acknowledged_at, acknowledged_by_user_id, reason,
 	last_error, consecutive_failures, created_at, updated_at`
 
 func (s *PostgresStore) ListIncidents(ctx context.Context) ([]models.Incident, error) {
-	rows, err := s.pool.Query(ctx, `SELECT `+incidentColumns+` FROM incidents ORDER BY started_at DESC`)
+	orgID, skip, err := s.tenantScope(ctx)
+	if err != nil {
+		return nil, err
+	}
+	query := `SELECT ` + incidentColumns + ` FROM incidents`
+	args := []any{}
+	if !skip {
+		query += ` WHERE organization_id = $1`
+		args = append(args, orgID)
+	}
+	query += ` ORDER BY started_at DESC`
+	rows, err := s.pool.Query(ctx, query, args...)
 	if err != nil {
 		return nil, translateError(err)
 	}
@@ -37,13 +49,24 @@ func (s *PostgresStore) GetIncident(ctx context.Context, id string) (models.Inci
 	if id == "" {
 		return models.Incident{}, fmt.Errorf("%w: incident id is required", apierr.ErrInvalidInput)
 	}
-	row := s.pool.QueryRow(ctx, `SELECT `+incidentColumns+` FROM incidents WHERE id=$1`, id)
+	orgID, skip, err := s.tenantScope(ctx)
+	if err != nil {
+		return models.Incident{}, err
+	}
+	query := `SELECT ` + incidentColumns + ` FROM incidents WHERE id=$1`
+	args := []any{id}
+	if !skip {
+		query += ` AND organization_id=$2`
+		args = append(args, orgID)
+	}
+	row := s.pool.QueryRow(ctx, query, args...)
 	i, err := scanIncident(row)
 	return i, translateError(err)
 }
 
 // GetOpenIncident returns the currently open incident for a monitor, or nil
 // if none exists. A missing row is not an error — it's the common case.
+// Scoped via monitor_id (whose FK to monitors already implies an org).
 func (s *PostgresStore) GetOpenIncident(ctx context.Context, monitorID string) (*models.Incident, error) {
 	if monitorID == "" {
 		return nil, fmt.Errorf("%w: monitor id is required", apierr.ErrInvalidInput)
@@ -61,6 +84,8 @@ func (s *PostgresStore) GetOpenIncident(ctx context.Context, monitorID string) (
 	return &incident, nil
 }
 
+// OpenIncident inserts a new incident. The caller must populate
+// OrganizationID — typically by copying it from the originating monitor.
 func (s *PostgresStore) OpenIncident(ctx context.Context, incident models.Incident) (models.Incident, error) {
 	if incident.ID == "" {
 		incident.ID = uuid.NewString()
@@ -68,11 +93,14 @@ func (s *PostgresStore) OpenIncident(ctx context.Context, incident models.Incide
 	if incident.StartedAt.IsZero() {
 		incident.StartedAt = time.Now().UTC()
 	}
+	if incident.OrganizationID == "" {
+		return models.Incident{}, fmt.Errorf("%w: organization id is required", apierr.ErrInvalidInput)
+	}
 	row := s.pool.QueryRow(ctx, `
-		INSERT INTO incidents (id, monitor_id, status, started_at, reason, last_error, consecutive_failures)
-		VALUES ($1,$2,'open',$3,$4,$5,$6)
+		INSERT INTO incidents (id, organization_id, monitor_id, status, started_at, reason, last_error, consecutive_failures)
+		VALUES ($1,$2,$3,'open',$4,$5,$6,$7)
 		RETURNING `+incidentColumns,
-		incident.ID, incident.MonitorID, incident.StartedAt, incident.Reason, incident.LastError, incident.ConsecutiveFailures)
+		incident.ID, incident.OrganizationID, incident.MonitorID, incident.StartedAt, incident.Reason, incident.LastError, incident.ConsecutiveFailures)
 	i, err := scanIncident(row)
 	return i, translateError(err)
 }
@@ -81,17 +109,61 @@ func (s *PostgresStore) ResolveIncident(ctx context.Context, id string) (models.
 	if id == "" {
 		return models.Incident{}, fmt.Errorf("%w: incident id is required", apierr.ErrInvalidInput)
 	}
-	row := s.pool.QueryRow(ctx, `
+	orgID, skip, err := s.tenantScope(ctx)
+	if err != nil {
+		return models.Incident{}, err
+	}
+	query := `
 		UPDATE incidents SET status='resolved', resolved_at=now(), updated_at=now()
-		WHERE id=$1
-		RETURNING `+incidentColumns, id)
+		WHERE id=$1`
+	args := []any{id}
+	if !skip {
+		query += ` AND organization_id=$2`
+		args = append(args, orgID)
+	}
+	query += ` RETURNING ` + incidentColumns
+	row := s.pool.QueryRow(ctx, query, args...)
+	i, err := scanIncident(row)
+	return i, translateError(err)
+}
+
+// AcknowledgeIncident records that a user has acknowledged an open incident
+// (soft ack — does not pause notifications until on-call escalation lands).
+// Re-ack by the same user is a no-op; re-ack by a different user updates
+// the user id and timestamp.
+func (s *PostgresStore) AcknowledgeIncident(ctx context.Context, id, userID string) (models.Incident, error) {
+	if id == "" {
+		return models.Incident{}, fmt.Errorf("%w: incident id is required", apierr.ErrInvalidInput)
+	}
+	orgID, skip, err := s.tenantScope(ctx)
+	if err != nil {
+		return models.Incident{}, err
+	}
+	query := `
+		UPDATE incidents SET acknowledged_at=now(), acknowledged_by_user_id=$2, updated_at=now()
+		WHERE id=$1`
+	args := []any{id, nullIfEmpty(userID)}
+	if !skip {
+		query += ` AND organization_id=$3`
+		args = append(args, orgID)
+	}
+	query += ` RETURNING ` + incidentColumns
+	row := s.pool.QueryRow(ctx, query, args...)
 	i, err := scanIncident(row)
 	return i, translateError(err)
 }
 
 func scanIncident(row pgx.Row) (models.Incident, error) {
 	var i models.Incident
-	err := row.Scan(&i.ID, &i.MonitorID, &i.Status, &i.StartedAt, &i.ResolvedAt, &i.Reason,
+	var ackUser *string
+	err := row.Scan(&i.ID, &i.OrganizationID, &i.MonitorID, &i.Status, &i.StartedAt, &i.ResolvedAt,
+		&i.AcknowledgedAt, &ackUser, &i.Reason,
 		&i.LastError, &i.ConsecutiveFailures, &i.CreatedAt, &i.UpdatedAt)
-	return i, err
+	if err != nil {
+		return i, err
+	}
+	if ackUser != nil {
+		i.AcknowledgedByUserID = *ackUser
+	}
+	return i, nil
 }

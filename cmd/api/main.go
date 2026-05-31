@@ -21,6 +21,7 @@ import (
 	"github.com/redis/go-redis/v9"
 
 	"github.com/jusso-dev/uptime/internal/api"
+	"github.com/jusso-dev/uptime/internal/auth"
 	"github.com/jusso-dev/uptime/internal/checks"
 	"github.com/jusso-dev/uptime/internal/config"
 	"github.com/jusso-dev/uptime/internal/metrics"
@@ -79,6 +80,12 @@ func run() int {
 		DefaultTimeout:      cfg.DefaultTimeout(),
 		UserAgent:           cfg.HTTPUserAgent,
 		TLSExpiryWarnDays:   cfg.TLSExpiryWarnDays,
+		HeartbeatStore:      store,
+		MultistepStore:      store,
+		BrowserStore:        store,
+		Redis:               redisClient,
+		BrowserEnabled:      cfg.BrowserCheckEnabled,
+		ICMPEnabled:         cfg.ICMPCheckEnabled,
 	})
 	notifier := notifications.NewService(store, notifications.Options{
 		AllowPrivateTargets: cfg.AllowPrivateTargets,
@@ -87,8 +94,38 @@ func run() int {
 		MaxRetries:          cfg.WebhookMaxRetries,
 		UserAgent:           cfg.HTTPUserAgent,
 	})
-	monitorSvc := service.NewMonitoringService(store, registry, notifier, m, true)
-	router := api.NewRouter(cfg, store, redisClient, monitorSvc, m, logger)
+
+	// Provider registry for the new dispatcher: webhook, slack, push (plus
+	// stubs for email/pagerduty to be filled in later).
+	dispatcher := notifications.NewDispatcher(store, logger,
+		notifications.NewWebhookProvider(notifier),
+		notifications.NewSlackProvider(cfg.HTTPUserAgent, cfg.WebhookTimeout()),
+		notifications.NewPushProvider(store, cfg.HTTPUserAgent, cfg.ExpoAccessToken, cfg.WebhookTimeout()),
+	)
+	poller := notifications.NewPoller(dispatcher, logger)
+	go func() {
+		if err := poller.Run(ctx); err != nil && !errors.Is(err, context.Canceled) {
+			logger.Error("notification poller exited unexpectedly", "error", err)
+		}
+	}()
+
+	monitorSvc := service.NewMonitoringService(store, registry, notifier, m, true).WithDispatcher(dispatcher, cfg.AppBaseURL)
+
+	var clerkVerifier *auth.ClerkVerifier
+	if cfg.ClerkEnabled {
+		// Fetching JWKS on startup is best-effort: if the network is flaky
+		// the keyfunc loader retries lazily. We log but don't fail boot so
+		// a brief Clerk outage doesn't take the API down.
+		v, err := auth.NewClerkVerifier(ctx, cfg.ClerkIssuer)
+		if err != nil {
+			logger.Error("clerk verifier init failed; continuing without clerk auth", "error", err)
+		} else {
+			clerkVerifier = v
+			logger.Info("clerk auth enabled", "issuer", cfg.ClerkIssuer)
+		}
+	}
+
+	router := api.NewRouter(cfg, store, redisClient, monitorSvc, m, logger, clerkVerifier)
 
 	server := &http.Server{
 		Addr:              cfg.Addr(),

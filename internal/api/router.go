@@ -14,6 +14,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/gin-contrib/cors"
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
@@ -44,21 +45,36 @@ type Server struct {
 	monitor *service.MonitoringService
 	metrics *metrics.Metrics
 	logger  *slog.Logger
+	clerk   *auth.ClerkVerifier
 }
 
-func NewRouter(cfg config.Config, store repository.Store, redisClient *redis.Client, monitor *service.MonitoringService, m *metrics.Metrics, logger *slog.Logger) *gin.Engine {
+func NewRouter(cfg config.Config, store repository.Store, redisClient *redis.Client, monitor *service.MonitoringService, m *metrics.Metrics, logger *slog.Logger, clerk *auth.ClerkVerifier) *gin.Engine {
 	gin.SetMode(gin.ReleaseMode)
-	s := &Server{cfg: cfg, store: store, redis: redisClient, monitor: monitor, metrics: m, logger: logger}
+	s := &Server{cfg: cfg, store: store, redis: redisClient, monitor: monitor, metrics: m, logger: logger, clerk: clerk}
 	r := gin.New()
 
 	// Middleware order matters: requestID first so every other middleware
 	// (including recovery, which logs) has a correlation id to attach.
-	r.Use(s.requestID(), s.recovery(), s.bodyLimit(), s.logging(), m.GinMiddleware())
+	// CORS sits before auth so preflight OPTIONS requests succeed without
+	// credentials.
+	r.Use(s.requestID(), s.recovery(), s.bodyLimit(), s.logging(), m.GinMiddleware(), s.cors())
 
 	r.GET("/health", s.health)
 	r.GET("/health-check", s.health)
 	r.GET("/metrics", gin.WrapH(promhttp.Handler()))
 	r.POST("/ping-endpoint", s.pingEndpoint)
+	r.POST("/webhooks/clerk", s.clerkWebhook)
+	// Heartbeat ping endpoint is intentionally public; the URL-embedded
+	// token IS the authentication. Both POST and GET are accepted so
+	// `curl https://.../ping` from a cron entry works without flags.
+	r.POST("/api/v1/heartbeats/:token/ping", s.heartbeatPing)
+	r.GET("/api/v1/heartbeats/:token/ping", s.heartbeatPing)
+
+	// Public status page routes. Both slug-based and custom-domain
+	// (host-header based) reach the same handler; the lookup resolves
+	// which one based on what the request carries.
+	r.GET("/s/:slug", s.publicStatusPage)
+	r.GET("/s/:slug/api/summary.json", s.publicStatusPageJSON)
 	// Operator-facing dashboard. The HTML is unauthenticated; it prompts
 	// the user for an API key client-side and uses it for the protected
 	// /api/v1/workers/status XHR. This matches the rest of the API.
@@ -67,29 +83,65 @@ func NewRouter(cfg config.Config, store repository.Store, redisClient *redis.Cli
 	r.NoMethod(s.methodNotAllowed)
 
 	v1 := r.Group("/api/v1")
-	v1.Use(s.apiKeyAuth())
+	v1.Use(s.auth())
+	v1.GET("/me", s.me)
+	v1.GET("/organizations", s.listOrganizations)
 	v1.POST("/check", s.manualCheck)
-	v1.GET("/monitors", s.listMonitors)
-	v1.POST("/monitors", s.createMonitor)
+	v1.GET("/monitors", s.listMonitorsFiltered)
+	v1.POST("/monitors", s.requireRole(auth.RoleMember), s.createMonitor)
 	v1.GET("/monitors/:id", s.getMonitor)
-	v1.PUT("/monitors/:id", s.updateMonitor)
-	v1.DELETE("/monitors/:id", s.deleteMonitor)
+	v1.PUT("/monitors/:id", s.requireRole(auth.RoleMember), s.updateMonitor)
+	v1.DELETE("/monitors/:id", s.requireRole(auth.RoleAdmin), s.deleteMonitor)
 	v1.POST("/monitors/:id/check-now", s.checkNow)
 	v1.GET("/monitors/:id/results", s.monitorResults)
+	v1.GET("/monitors/:id/heartbeat", s.getMonitorHeartbeat)
+	v1.POST("/monitors/:id/heartbeat", s.requireRole(auth.RoleMember), s.setMonitorHeartbeat)
+	v1.GET("/monitors/:id/multistep", s.getMonitorMultistep)
+	v1.PUT("/monitors/:id/multistep", s.requireRole(auth.RoleMember), s.setMonitorMultistep)
+	v1.GET("/monitors/:id/browser-script", s.getMonitorBrowserScript)
+	v1.PUT("/monitors/:id/browser-script", s.requireRole(auth.RoleMember), s.setMonitorBrowserScript)
 	v1.GET("/check-results", s.checkResults)
 	v1.GET("/incidents", s.listIncidents)
 	v1.GET("/incidents/:id", s.getIncident)
-	v1.POST("/incidents/:id/resolve", s.resolveIncident)
+	v1.POST("/incidents/:id/resolve", s.requireRole(auth.RoleMember), s.resolveIncident)
+	v1.POST("/incidents/:id/ack", s.requireRole(auth.RoleMember), s.acknowledgeIncident)
 	v1.GET("/stats/overview", s.overviewStats)
 	v1.GET("/stats/monitors/:id", s.monitorStats)
 	v1.GET("/notification-channels", s.listNotificationChannels)
-	v1.POST("/notification-channels", s.createNotificationChannel)
-	v1.PUT("/notification-channels/:id", s.updateNotificationChannel)
-	v1.DELETE("/notification-channels/:id", s.deleteNotificationChannel)
+	v1.POST("/notification-channels", s.requireRole(auth.RoleAdmin), s.createNotificationChannel)
+	v1.PUT("/notification-channels/:id", s.requireRole(auth.RoleAdmin), s.updateNotificationChannel)
+	v1.DELETE("/notification-channels/:id", s.requireRole(auth.RoleAdmin), s.deleteNotificationChannel)
 	v1.POST("/notification-channels/:id/test", s.testNotificationChannel)
-	v1.POST("/api-keys", s.createAPIKey)
+	v1.POST("/api-keys", s.requireRole(auth.RoleAdmin), s.createAPIKey)
 	v1.GET("/api-keys", s.listAPIKeys)
-	v1.DELETE("/api-keys/:id", s.revokeAPIKey)
+	v1.DELETE("/api-keys/:id", s.requireRole(auth.RoleAdmin), s.revokeAPIKey)
+	v1.GET("/push-devices", s.listPushDevices)
+	v1.POST("/push-devices", s.registerPushDevice)
+	v1.DELETE("/push-devices/:id", s.deletePushDevice)
+
+	// Status page management.
+	v1.GET("/status-pages", s.listStatusPages)
+	v1.POST("/status-pages", s.requireRole(auth.RoleAdmin), s.createStatusPage)
+	v1.DELETE("/status-pages/:id", s.requireRole(auth.RoleAdmin), s.deleteStatusPage)
+	v1.GET("/status-pages/:id/components", s.listStatusPageComponents)
+	v1.PUT("/status-pages/:id/components", s.requireRole(auth.RoleMember), s.upsertStatusPageComponent)
+	v1.DELETE("/status-pages/:id/components/:componentId", s.requireRole(auth.RoleMember), s.deleteStatusPageComponent)
+
+	// Maintenance windows.
+	v1.GET("/maintenance-windows", s.listMaintenanceWindows)
+	v1.POST("/maintenance-windows", s.requireRole(auth.RoleMember), s.createMaintenanceWindow)
+	v1.DELETE("/maintenance-windows/:id", s.requireRole(auth.RoleMember), s.deleteMaintenanceWindow)
+
+	// Tags.
+	v1.GET("/tags", s.listTags)
+	v1.POST("/tags", s.requireRole(auth.RoleMember), s.createTag)
+	v1.DELETE("/tags/:id", s.requireRole(auth.RoleMember), s.deleteTag)
+	v1.PUT("/monitors/:id/tags", s.requireRole(auth.RoleMember), s.setMonitorTags)
+
+	// SLA reports.
+	v1.GET("/sla/monitors/:id", s.slaForMonitor)
+	v1.GET("/sla/organization", s.slaForOrg)
+
 	v1.GET("/workers/status", s.workersStatus)
 	return r
 }
@@ -167,9 +219,10 @@ func (s *Server) createMonitor(c *gin.Context) {
 	if !bind(c, &monitor) {
 		return
 	}
-	// Status is server-managed; never trust the client-supplied value.
+	// Status and ownership are server-managed; never trust the client.
 	monitor.Status = ""
 	monitor.ID = ""
+	monitor.OrganizationID = ""
 	created, err := s.store.CreateMonitor(c.Request.Context(), monitor)
 	s.respondStatus(c, http.StatusCreated, created, err)
 }
@@ -185,6 +238,7 @@ func (s *Server) updateMonitor(c *gin.Context) {
 		return
 	}
 	monitor.ID = c.Param("id")
+	monitor.OrganizationID = ""
 	updated, err := s.store.UpdateMonitor(c.Request.Context(), monitor)
 	s.respond(c, updated, err)
 }
@@ -234,6 +288,16 @@ func (s *Server) resolveIncident(c *gin.Context) {
 	s.respond(c, item, err)
 }
 
+func (s *Server) acknowledgeIncident(c *gin.Context) {
+	p, err := auth.Require(c.Request.Context())
+	if err != nil {
+		s.respond(c, nil, err)
+		return
+	}
+	item, err := s.store.AcknowledgeIncident(c.Request.Context(), c.Param("id"), p.UserID)
+	s.respond(c, item, err)
+}
+
 func (s *Server) overviewStats(c *gin.Context) {
 	stats, err := s.store.OverviewStats(c.Request.Context())
 	if err == nil && s.metrics != nil {
@@ -280,6 +344,7 @@ func (s *Server) createNotificationChannel(c *gin.Context) {
 		return
 	}
 	channel.ID = ""
+	channel.OrganizationID = ""
 	created, err := s.store.CreateNotificationChannel(c.Request.Context(), channel)
 	s.respondStatus(c, http.StatusCreated, created, err)
 }
@@ -290,6 +355,7 @@ func (s *Server) updateNotificationChannel(c *gin.Context) {
 		return
 	}
 	channel.ID = c.Param("id")
+	channel.OrganizationID = ""
 	updated, err := s.store.UpdateNotificationChannel(c.Request.Context(), channel)
 	s.respond(c, updated, err)
 }
@@ -329,7 +395,7 @@ func (s *Server) createAPIKey(c *gin.Context) {
 		return
 	}
 	// `key` is shown ONCE to the caller; never returned by list/get.
-	c.JSON(http.StatusCreated, gin.H{"id": key.ID, "name": key.Name, "key": raw, "createdAt": key.CreatedAt})
+	c.JSON(http.StatusCreated, gin.H{"id": key.ID, "name": key.Name, "key": raw, "createdAt": key.CreatedAt, "organizationId": key.OrganizationID})
 }
 
 func (s *Server) listAPIKeys(c *gin.Context) {
@@ -345,46 +411,185 @@ func (s *Server) revokeAPIKey(c *gin.Context) {
 	c.Status(http.StatusNoContent)
 }
 
-// apiKeyAuth authenticates every /api/v1 request. The bootstrap key is
-// compared with constant-time equality; database keys are matched by SHA-256
-// hash, also via constant-time comparison inside auth.Matches.
-func (s *Server) apiKeyAuth() gin.HandlerFunc {
+// auth is the composed middleware that authenticates every /api/v1 request.
+// Three credential types are accepted, in order of preference:
+//
+//  1. Bootstrap API key (constant-time match against config) — kept for
+//     legacy CI integrations. Pins to BootstrapOrgID.
+//  2. Database-backed API key (hashed comparison) — for production
+//     machine-to-machine use. Pins to api_keys.organization_id.
+//  3. Clerk session JWT — for users (web + mobile). Pins to the org claim
+//     embedded in the JWT, with fallback to the X-Org-Id header.
+//
+// The decision is made by the credential shape: `upt_…` raw values go
+// through the API-key path; everything else is verified as a Clerk JWT.
+// On success the middleware attaches an auth.Principal to the request
+// context for downstream handlers and repositories to read.
+func (s *Server) auth() gin.HandlerFunc {
 	return func(c *gin.Context) {
 		raw := bearer(c.GetHeader("Authorization"))
 		if raw == "" {
 			raw = strings.TrimSpace(c.GetHeader("X-API-Key"))
 		}
 		if raw == "" {
-			s.unauthorized(c, "api key required")
+			s.unauthorized(c, "credentials required")
 			return
 		}
-		if len(raw) > 256 {
-			// Avoid hashing pathologically large headers.
-			s.unauthorized(c, "invalid api key")
+		if len(raw) > 4096 {
+			s.unauthorized(c, "credentials too large")
 			return
 		}
-		if subtle.ConstantTimeCompare([]byte(raw), []byte(s.cfg.BootstrapAPIKey)) == 1 {
+
+		// Path 1+2: API-key shape.
+		if strings.HasPrefix(raw, "upt_") || subtle.ConstantTimeCompare([]byte(raw), []byte(s.cfg.BootstrapAPIKey)) == 1 {
+			if subtle.ConstantTimeCompare([]byte(raw), []byte(s.cfg.BootstrapAPIKey)) == 1 {
+				p := auth.Principal{
+					ActorType: auth.ActorAPIKey,
+					OrgID:     s.cfg.BootstrapOrgID,
+					Role:      auth.RoleOwner,
+					APIKeyID:  "bootstrap",
+				}
+				c.Request = c.Request.WithContext(auth.WithPrincipal(c.Request.Context(), p))
+				c.Set("apiKeyID", p.APIKeyID)
+				c.Next()
+				return
+			}
+			key, err := s.store.FindAPIKeyByHash(c.Request.Context(), auth.Hash(raw))
+			if err != nil {
+				s.logger.Error("auth: api key lookup failed", "request_id", c.GetString(requestIDKey), "error", err)
+				s.unauthorized(c, "invalid credentials")
+				return
+			}
+			if key == nil {
+				s.unauthorized(c, "invalid credentials")
+				return
+			}
+			if err := s.store.TouchAPIKey(c.Request.Context(), key.ID); err != nil {
+				s.logger.Warn("auth: touch api key failed", "request_id", c.GetString(requestIDKey), "key_id", key.ID, "error", err)
+			}
+			p := auth.Principal{
+				ActorType: auth.ActorAPIKey,
+				OrgID:     key.OrganizationID,
+				Role:      auth.RoleAdmin,
+				APIKeyID:  key.ID,
+			}
+			c.Request = c.Request.WithContext(auth.WithPrincipal(c.Request.Context(), p))
+			c.Set("apiKeyID", key.ID)
 			c.Next()
 			return
 		}
-		key, err := s.store.FindAPIKeyByHash(c.Request.Context(), auth.Hash(raw))
+
+		// Path 3: Clerk JWT.
+		if s.clerk == nil {
+			s.unauthorized(c, "clerk authentication is not enabled")
+			return
+		}
+		claims, err := s.clerk.Verify(raw)
 		if err != nil {
-			s.logger.Error("auth: lookup failed", "request_id", c.GetString(requestIDKey), "error", err)
-			s.unauthorized(c, "invalid api key")
+			s.logger.Debug("auth: clerk verify failed", "request_id", c.GetString(requestIDKey), "error", err)
+			s.unauthorized(c, "invalid credentials")
 			return
 		}
-		if key == nil {
-			s.unauthorized(c, "invalid api key")
-			return
+
+		// Look up (or mirror) the local user row so downstream handlers
+		// have a stable local id rather than the clerk_user_id.
+		sysCtx := auth.WithSystem(c.Request.Context())
+		user, err := s.store.GetUserByClerkID(sysCtx, claims.Subject)
+		if err != nil {
+			user, err = s.store.UpsertUser(sysCtx, models.User{
+				ClerkUserID: claims.Subject,
+				Email:       claims.Email,
+			})
+			if err != nil {
+				s.logger.Error("auth: upsert user", "request_id", c.GetString(requestIDKey), "clerk_user", claims.Subject, "error", err)
+				s.unauthorized(c, "could not resolve user")
+				return
+			}
 		}
-		// Fire-and-forget; touch failures should not block authenticated
-		// requests but we still want them in logs.
-		if err := s.store.TouchAPIKey(c.Request.Context(), key.ID); err != nil {
-			s.logger.Warn("auth: touch api key failed", "request_id", c.GetString(requestIDKey), "key_id", key.ID, "error", err)
+
+		// Resolve the active organization: JWT claim > X-Org-Id header >
+		// single-membership fallback.
+		orgID := ""
+		role := auth.RoleViewer
+		if claims.OrgID != "" {
+			if org, err := s.store.GetOrganizationByClerkID(sysCtx, claims.OrgID); err == nil {
+				orgID = org.ID
+				role = auth.ResolveRole(claims.OrgRole)
+			}
 		}
-		c.Set("apiKeyID", key.ID)
+		if orgID == "" {
+			if hdr := strings.TrimSpace(c.GetHeader("X-Org-Id")); hdr != "" {
+				orgID = hdr
+			}
+		}
+		if orgID == "" {
+			memberships, err := s.store.ListMembershipsForUser(sysCtx, user.ID)
+			if err == nil && len(memberships) == 1 {
+				orgID = memberships[0].OrganizationID
+				role = auth.ResolveRole(memberships[0].Role)
+			}
+		}
+
+		p := auth.Principal{
+			ActorType:      auth.ActorUser,
+			UserID:         user.ID,
+			OrgID:          orgID,
+			Role:           role,
+			ClerkSessionID: claims.SessionID,
+		}
+		c.Request = c.Request.WithContext(auth.WithPrincipal(c.Request.Context(), p))
 		c.Next()
 	}
+}
+
+// requireRole returns a middleware that aborts with 403 unless the request
+// principal has at least `need` privilege. Use it to gate write endpoints
+// (members/admins) without scattering role checks across handlers.
+func (s *Server) requireRole(need auth.Role) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		p := auth.FromContext(c.Request.Context())
+		if p.ActorType == auth.ActorAPIKey {
+			// API keys default to admin-equivalent for now; future per-key
+			// scoping lands as part of the API-key refactor.
+			c.Next()
+			return
+		}
+		if !p.Role.AtLeast(need) {
+			c.AbortWithStatusJSON(http.StatusForbidden, gin.H{
+				"error":     "insufficient role",
+				"required":  need,
+				"requestId": c.GetString(requestIDKey),
+			})
+			return
+		}
+		c.Next()
+	}
+}
+
+// cors returns a CORS middleware whose allowed origins are read from
+// configuration. In development mode we additionally permit localhost and
+// Expo dev URLs so the mobile app can talk to a locally-running API.
+func (s *Server) cors() gin.HandlerFunc {
+	allowAll := !s.cfg.IsProduction() && len(s.cfg.CORSAllowedOrigins) == 0
+	cfg := cors.Config{
+		AllowMethods:     []string{"GET", "POST", "PUT", "DELETE", "PATCH", "OPTIONS"},
+		AllowHeaders:     []string{"Authorization", "Content-Type", "X-Org-Id", "X-API-Key", "X-Request-ID"},
+		ExposeHeaders:    []string{"X-Request-ID"},
+		AllowCredentials: true,
+		MaxAge:           12 * time.Hour,
+	}
+	if allowAll {
+		cfg.AllowOriginFunc = func(origin string) bool {
+			return strings.HasPrefix(origin, "http://localhost") ||
+				strings.HasPrefix(origin, "http://127.0.0.1") ||
+				strings.HasPrefix(origin, "https://localhost") ||
+				strings.HasPrefix(origin, "exp://") ||
+				strings.HasPrefix(origin, "exps://")
+		}
+	} else {
+		cfg.AllowOrigins = s.cfg.CORSAllowedOrigins
+	}
+	return cors.New(cfg)
 }
 
 func (s *Server) unauthorized(c *gin.Context, message string) {

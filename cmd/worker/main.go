@@ -18,11 +18,13 @@ import (
 	"time"
 
 	"github.com/prometheus/client_golang/prometheus/promhttp"
+	"github.com/redis/go-redis/v9"
 
 	"github.com/jusso-dev/uptime/internal/checks"
 	"github.com/jusso-dev/uptime/internal/config"
 	"github.com/jusso-dev/uptime/internal/metrics"
 	"github.com/jusso-dev/uptime/internal/notifications"
+	"github.com/jusso-dev/uptime/internal/queue"
 	"github.com/jusso-dev/uptime/internal/repository"
 	"github.com/jusso-dev/uptime/internal/service"
 	workerpkg "github.com/jusso-dev/uptime/internal/worker"
@@ -57,11 +59,30 @@ func run() int {
 
 	store := repository.NewPostgresStore(pool)
 	m := metrics.New()
+
+	// Redis is optional for the worker today (browser-check submission is
+	// the only consumer). If the URL is unreachable the worker still runs
+	// every non-browser check type — browser monitors will simply report
+	// "queue unavailable" until Redis is back.
+	var redisClient *redis.Client
+	if opts, err := redis.ParseURL(cfg.RedisURL); err == nil {
+		redisClient = redis.NewClient(opts)
+		defer redisClient.Close()
+	} else {
+		logger.Warn("redis url invalid; browser checks disabled", "error", err)
+	}
+
 	registry := checks.NewRegistry(checks.Options{
 		AllowPrivateTargets: cfg.AllowPrivateTargets,
 		DefaultTimeout:      cfg.DefaultTimeout(),
 		UserAgent:           cfg.HTTPUserAgent,
 		TLSExpiryWarnDays:   cfg.TLSExpiryWarnDays,
+		HeartbeatStore:      store,
+		MultistepStore:      store,
+		BrowserStore:        store,
+		Redis:               redisClient,
+		BrowserEnabled:      cfg.BrowserCheckEnabled,
+		ICMPEnabled:         cfg.ICMPCheckEnabled,
 	})
 	notifier := notifications.NewService(store, notifications.Options{
 		AllowPrivateTargets: cfg.AllowPrivateTargets,
@@ -70,7 +91,16 @@ func run() int {
 		MaxRetries:          cfg.WebhookMaxRetries,
 		UserAgent:           cfg.HTTPUserAgent,
 	})
-	monitorSvc := service.NewMonitoringService(store, registry, notifier, m, true)
+	q := queue.New(redisClient)
+	dispatcher := notifications.NewDispatcher(store, logger,
+		notifications.NewWebhookProvider(notifier),
+		notifications.NewSlackProvider(cfg.HTTPUserAgent, cfg.WebhookTimeout()),
+		notifications.NewPushProvider(store, cfg.HTTPUserAgent, cfg.ExpoAccessToken, cfg.WebhookTimeout()),
+	)
+	monitorSvc := service.NewMonitoringService(store, registry, notifier, m, true).
+		WithRegion(cfg.WorkerRegion).
+		WithQueue(q).
+		WithDispatcher(dispatcher, cfg.AppBaseURL)
 	w := workerpkg.New(cfg, store, monitorSvc, m, logger)
 
 	metricsServer := &http.Server{
