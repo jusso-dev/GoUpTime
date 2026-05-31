@@ -114,6 +114,53 @@ func (s *Service) SendIncidentResolved(ctx context.Context, monitor models.Monit
 	})
 }
 
+func (s *Service) SendStatusPageAnnouncement(ctx context.Context, subscribers []models.StatusPageSubscriber, announcement models.StatusPageAnnouncement) {
+	channels, err := s.store.ListNotificationChannels(ctx)
+	if err != nil {
+		return
+	}
+	for _, channel := range channels {
+		if !channel.Enabled || (channel.Type != "smtp" && channel.Type != "email") {
+			continue
+		}
+		for _, subscriber := range subscribers {
+			if subscriber.ConfirmedAt == nil || !subscriberMatchesAnnouncement(subscriber, announcement) {
+				continue
+			}
+			clone := channel
+			cfg := map[string]any{}
+			for k, v := range channel.Config {
+				cfg[k] = v
+			}
+			cfg["to"] = subscriber.Email
+			clone.Config = cfg
+			s.deliverSMTP(ctx, clone, IncidentEvent{
+				Event:       "status_page.announcement",
+				IncidentID:  announcement.IncidentID,
+				MonitorName: announcement.Title,
+				Reason:      announcement.Body,
+				StartedAt:   time.Now().UTC(),
+			})
+		}
+	}
+}
+
+func subscriberMatchesAnnouncement(subscriber models.StatusPageSubscriber, announcement models.StatusPageAnnouncement) bool {
+	if len(subscriber.ComponentIDs) == 0 || len(announcement.ComponentIDs) == 0 {
+		return true
+	}
+	allowed := map[string]bool{}
+	for _, id := range subscriber.ComponentIDs {
+		allowed[id] = true
+	}
+	for _, id := range announcement.ComponentIDs {
+		if allowed[id] {
+			return true
+		}
+	}
+	return false
+}
+
 func (s *Service) send(ctx context.Context, event IncidentEvent) {
 	channels, err := s.store.ListNotificationChannels(ctx)
 	if err != nil {

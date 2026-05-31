@@ -493,6 +493,11 @@ func (s *Server) createStatusPageAnnouncement(c *gin.Context) {
 	item.ID = ""
 	item.StatusPageID = c.Param("id")
 	created, err := store.CreateStatusPageAnnouncement(c.Request.Context(), item)
+	if err == nil && s.notify != nil && created.Status == "published" {
+		if subscribers, subErr := store.ListStatusPageSubscribers(c.Request.Context(), c.Param("id")); subErr == nil {
+			go s.notify.SendStatusPageAnnouncement(auth.WithSystemOrg(context.Background(), created.OrganizationID), subscribers, created)
+		}
+	}
 	s.respondStatus(c, http.StatusCreated, created, err)
 }
 

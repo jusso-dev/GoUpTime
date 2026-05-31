@@ -26,6 +26,7 @@ import (
 	"github.com/jusso-dev/uptime/internal/config"
 	"github.com/jusso-dev/uptime/internal/metrics"
 	"github.com/jusso-dev/uptime/internal/models"
+	"github.com/jusso-dev/uptime/internal/notifications"
 	"github.com/jusso-dev/uptime/internal/repository"
 	"github.com/jusso-dev/uptime/internal/service"
 )
@@ -43,14 +44,15 @@ type Server struct {
 	store   repository.Store
 	redis   *redis.Client
 	monitor *service.MonitoringService
+	notify  *notifications.Service
 	metrics *metrics.Metrics
 	logger  *slog.Logger
 	clerk   *auth.ClerkVerifier
 }
 
-func NewRouter(cfg config.Config, store repository.Store, redisClient *redis.Client, monitor *service.MonitoringService, m *metrics.Metrics, logger *slog.Logger, clerk *auth.ClerkVerifier) *gin.Engine {
+func NewRouter(cfg config.Config, store repository.Store, redisClient *redis.Client, monitor *service.MonitoringService, notifier *notifications.Service, m *metrics.Metrics, logger *slog.Logger, clerk *auth.ClerkVerifier) *gin.Engine {
 	gin.SetMode(gin.ReleaseMode)
-	s := &Server{cfg: cfg, store: store, redis: redisClient, monitor: monitor, metrics: m, logger: logger, clerk: clerk}
+	s := &Server{cfg: cfg, store: store, redis: redisClient, monitor: monitor, notify: notifier, metrics: m, logger: logger, clerk: clerk}
 	r := gin.New()
 
 	// Middleware order matters: requestID first so every other middleware

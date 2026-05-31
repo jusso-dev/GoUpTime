@@ -132,7 +132,7 @@ func run() int {
 		}
 	}
 
-	router := api.NewRouter(cfg, store, redisClient, monitorSvc, m, logger, clerkVerifier)
+	router := api.NewRouter(cfg, store, redisClient, monitorSvc, notifier, m, logger, clerkVerifier)
 
 	server := &http.Server{
 		Addr:              cfg.Addr(),
