@@ -1,0 +1,11 @@
+FROM mcr.microsoft.com/playwright:v1.53.0-jammy
+
+WORKDIR /app
+COPY cmd/browser-worker/package.json ./package.json
+RUN npm install --omit=dev
+COPY cmd/browser-worker/worker.mjs ./worker.mjs
+
+ENV BROWSER_ARTIFACT_DIR=/artifacts
+RUN mkdir -p /artifacts
+
+CMD ["npm", "start"]

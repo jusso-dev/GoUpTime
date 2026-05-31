@@ -77,6 +77,8 @@ type IncidentEvent struct {
 	MonitorID   string    `json:"monitorId"`
 	MonitorName string    `json:"monitorName"`
 	Status      string    `json:"status,omitempty"`
+	Severity    string    `json:"severity,omitempty"`
+	Impact      string    `json:"impact,omitempty"`
 	Reason      string    `json:"reason,omitempty"`
 	StartedAt   time.Time `json:"startedAt,omitempty"`
 	ResolvedAt  time.Time `json:"resolvedAt,omitempty"`
@@ -89,6 +91,8 @@ func (s *Service) SendIncidentOpened(ctx context.Context, monitor models.Monitor
 		MonitorID:   monitor.ID,
 		MonitorName: monitor.Name,
 		Status:      string(models.StatusDown),
+		Severity:    string(incident.Severity),
+		Impact:      string(incident.Impact),
 		Reason:      incident.Reason,
 		StartedAt:   incident.StartedAt,
 	})
@@ -104,6 +108,8 @@ func (s *Service) SendIncidentResolved(ctx context.Context, monitor models.Monit
 		IncidentID:  incident.ID,
 		MonitorID:   monitor.ID,
 		MonitorName: monitor.Name,
+		Severity:    string(incident.Severity),
+		Impact:      string(incident.Impact),
 		ResolvedAt:  resolvedAt,
 	})
 }

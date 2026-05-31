@@ -75,6 +75,13 @@ func NewRouter(cfg config.Config, store repository.Store, redisClient *redis.Cli
 	// which one based on what the request carries.
 	r.GET("/s/:slug", s.publicStatusPage)
 	r.GET("/s/:slug/api/summary.json", s.publicStatusPageJSON)
+	r.GET("/s/:slug/api/announcements.json", s.publicStatusAnnouncements)
+	r.POST("/s/:slug/subscribe", s.publicStatusSubscribe)
+	r.GET("/s/:slug/subscribers/confirm", s.publicStatusConfirmSubscriber)
+	r.GET("/s/:slug/unsubscribe", s.publicStatusUnsubscribe)
+	r.POST("/api/v1/agent/heartbeat", s.agentHeartbeat)
+	r.GET("/api/v1/agent/jobs", s.agentJobs)
+	r.POST("/api/v1/agent/results", s.agentSubmitResult)
 	// Operator-facing dashboard. The HTML is unauthenticated; it prompts
 	// the user for an API key client-side and uses it for the protected
 	// /api/v1/workers/status XHR. This matches the rest of the API.
@@ -100,11 +107,26 @@ func NewRouter(cfg config.Config, store repository.Store, redisClient *redis.Cli
 	v1.PUT("/monitors/:id/multistep", s.requireRole(auth.RoleMember), s.setMonitorMultistep)
 	v1.GET("/monitors/:id/browser-script", s.getMonitorBrowserScript)
 	v1.PUT("/monitors/:id/browser-script", s.requireRole(auth.RoleMember), s.setMonitorBrowserScript)
+	v1.GET("/monitors/:id/dependencies", s.listMonitorDependencies)
+	v1.PUT("/monitors/:id/dependencies", s.requireRole(auth.RoleMember), s.setMonitorDependencies)
 	v1.GET("/check-results", s.checkResults)
 	v1.GET("/incidents", s.listIncidents)
 	v1.GET("/incidents/:id", s.getIncident)
+	v1.POST("/incidents/:id/state", s.requireRole(auth.RoleMember), s.transitionIncident)
 	v1.POST("/incidents/:id/resolve", s.requireRole(auth.RoleMember), s.resolveIncident)
 	v1.POST("/incidents/:id/ack", s.requireRole(auth.RoleMember), s.acknowledgeIncident)
+	v1.GET("/incidents/:id/timeline", s.incidentTimeline)
+	v1.GET("/incidents/:id/comments", s.listIncidentComments)
+	v1.POST("/incidents/:id/comments", s.requireRole(auth.RoleMember), s.createIncidentComment)
+	v1.PUT("/incidents/:id/comments/:commentId", s.requireRole(auth.RoleMember), s.updateIncidentComment)
+	v1.DELETE("/incidents/:id/comments/:commentId", s.requireRole(auth.RoleMember), s.deleteIncidentComment)
+	v1.GET("/incidents/:id/postmortem", s.getIncidentPostmortem)
+	v1.PUT("/incidents/:id/postmortem", s.requireRole(auth.RoleMember), s.upsertIncidentPostmortem)
+	v1.GET("/incidents/:id/postmortem.md", s.exportIncidentPostmortem)
+	v1.GET("/incidents/:id/action-items", s.listIncidentActionItems)
+	v1.POST("/incidents/:id/action-items", s.requireRole(auth.RoleMember), s.createIncidentActionItem)
+	v1.PUT("/incidents/:id/action-items/:actionItemId", s.requireRole(auth.RoleMember), s.updateIncidentActionItem)
+	v1.GET("/incidents/:id/runbooks", s.incidentRunbooks)
 	v1.GET("/stats/overview", s.overviewStats)
 	v1.GET("/stats/monitors/:id", s.monitorStats)
 	v1.GET("/reports/uptime", s.uptimeReport)
@@ -126,6 +148,9 @@ func NewRouter(cfg config.Config, store repository.Store, redisClient *redis.Cli
 	v1.GET("/push-devices", s.listPushDevices)
 	v1.POST("/push-devices", s.registerPushDevice)
 	v1.DELETE("/push-devices/:id", s.deletePushDevice)
+	v1.GET("/agents", s.listAgents)
+	v1.POST("/agents", s.requireRole(auth.RoleAdmin), s.createAgent)
+	v1.DELETE("/agents/:id", s.requireRole(auth.RoleAdmin), s.revokeAgent)
 
 	// Status page management.
 	v1.GET("/status-pages", s.listStatusPages)
@@ -138,6 +163,9 @@ func NewRouter(cfg config.Config, store repository.Store, redisClient *redis.Cli
 	v1.PUT("/status-pages/:id/components/:componentId", s.requireRole(auth.RoleMember), s.updateStatusPageComponent)
 	v1.PUT("/status-pages/:id/components", s.requireRole(auth.RoleMember), s.upsertStatusPageComponent)
 	v1.DELETE("/status-pages/:id/components/:componentId", s.requireRole(auth.RoleMember), s.deleteStatusPageComponent)
+	v1.GET("/status-pages/:id/subscribers", s.listStatusPageSubscribers)
+	v1.GET("/status-pages/:id/announcements", s.listStatusPageAnnouncements)
+	v1.POST("/status-pages/:id/announcements", s.requireRole(auth.RoleMember), s.createStatusPageAnnouncement)
 
 	// Maintenance windows.
 	v1.GET("/maintenance-windows", s.listMaintenanceWindows)
@@ -155,6 +183,19 @@ func NewRouter(cfg config.Config, store repository.Store, redisClient *redis.Cli
 	// SLA reports.
 	v1.GET("/sla/monitors/:id", s.slaForMonitor)
 	v1.GET("/sla/organization", s.slaForOrg)
+
+	v1.GET("/runbooks", s.listRunbooks)
+	v1.POST("/runbooks", s.requireRole(auth.RoleMember), s.createRunbook)
+	v1.GET("/on-call/schedules", s.listOnCallSchedules)
+	v1.POST("/on-call/schedules", s.requireRole(auth.RoleAdmin), s.createOnCallSchedule)
+	v1.POST("/on-call/schedules/:id/overrides", s.requireRole(auth.RoleMember), s.createOnCallOverride)
+	v1.GET("/on-call/schedules/:id/current", s.resolveOnCall)
+	v1.GET("/on-call/schedules/:id/upcoming", s.upcomingOnCall)
+	v1.GET("/escalation-policies", s.listEscalationPolicies)
+	v1.POST("/escalation-policies", s.requireRole(auth.RoleAdmin), s.createEscalationPolicy)
+	v1.POST("/browser-artifacts", s.requireRole(auth.RoleMember), s.createBrowserArtifact)
+	v1.GET("/browser-artifacts/:id/download", s.downloadBrowserArtifact)
+	v1.POST("/browser-artifacts/cleanup", s.requireRole(auth.RoleAdmin), s.cleanupBrowserArtifacts)
 
 	v1.GET("/workers/status", s.workersStatus)
 	return r

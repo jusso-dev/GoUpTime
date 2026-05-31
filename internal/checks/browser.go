@@ -35,19 +35,25 @@ type BrowserChecker struct {
 }
 
 type browserJob struct {
-	JobID         string `json:"jobId"`
-	MonitorID     string `json:"monitorId"`
-	Source        string `json:"source"`
-	TimeoutMS     int64  `json:"timeoutMs"`
-	ResultChannel string `json:"resultChannel"`
+	JobID         string         `json:"jobId"`
+	MonitorID     string         `json:"monitorId"`
+	Source        string         `json:"source"`
+	TimeoutMS     int64          `json:"timeoutMs"`
+	Retries       int            `json:"retries,omitempty"`
+	Env           map[string]any `json:"env,omitempty"`
+	RetentionDays int            `json:"retentionDays,omitempty"`
+	ResultChannel string         `json:"resultChannel"`
 }
 
 type browserResult struct {
-	JobID         string `json:"jobId"`
-	Success       bool   `json:"success"`
-	DurationMS    int64  `json:"durationMs"`
-	ScreenshotURL string `json:"screenshotUrl"`
-	Error         string `json:"error"`
+	JobID         string           `json:"jobId"`
+	Success       bool             `json:"success"`
+	DurationMS    int64            `json:"durationMs"`
+	ScreenshotURL string           `json:"screenshotUrl"`
+	Error         string           `json:"error"`
+	ConsoleErrors []string         `json:"consoleErrors,omitempty"`
+	NetworkErrors []string         `json:"networkErrors,omitempty"`
+	Artifacts     []map[string]any `json:"artifacts,omitempty"`
 }
 
 const (
@@ -81,6 +87,9 @@ func (c BrowserChecker) Check(ctx context.Context, monitor models.Monitor) (mode
 		MonitorID:     monitor.ID,
 		Source:        script.Source,
 		TimeoutMS:     timeout.Milliseconds(),
+		Retries:       script.Retries,
+		Env:           script.Env,
+		RetentionDays: script.RetentionDays,
 		ResultChannel: browserResultChannel,
 	}
 	payload, err := json.Marshal(job)
@@ -127,6 +136,18 @@ func (c BrowserChecker) Check(ctx context.Context, monitor models.Monitor) (mode
 			result.TotalMS = r.DurationMS
 			if r.Error != "" {
 				result.Error = r.Error
+			}
+			if result.Metadata == nil {
+				result.Metadata = map[string]any{}
+			}
+			if len(r.ConsoleErrors) > 0 {
+				result.Metadata["consoleErrors"] = r.ConsoleErrors
+			}
+			if len(r.NetworkErrors) > 0 {
+				result.Metadata["networkErrors"] = r.NetworkErrors
+			}
+			if len(r.Artifacts) > 0 {
+				result.Metadata["artifacts"] = r.Artifacts
 			}
 			if r.Success {
 				result.Success = true

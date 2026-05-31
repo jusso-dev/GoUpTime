@@ -107,10 +107,17 @@ func AutoMigrate(ctx context.Context, db *gorm.DB) error {
 		&dbMonitorTag{},
 		&dbCheckResult{},
 		&dbIncident{},
+		&dbIncidentTimelineEvent{},
+		&dbIncidentComment{},
+		&dbIncidentPostmortem{},
+		&dbIncidentActionItem{},
+		&dbIncidentSuppression{},
+		&dbMonitorDependency{},
 		&dbNotificationChannel{},
 		&dbNotificationEvent{},
 		&dbOutboxEntry{},
 		&dbPushDevice{},
+		&dbAgent{},
 		&dbAPIKey{},
 		&dbAuditLog{},
 		&dbWorkerHeartbeat{},
@@ -123,6 +130,15 @@ func AutoMigrate(ctx context.Context, db *gorm.DB) error {
 		&dbHeartbeat{},
 		&dbMultistepScript{},
 		&dbBrowserScript{},
+		&dbStatusPageSubscriber{},
+		&dbStatusPageSubscriberComponent{},
+		&dbStatusPageAnnouncement{},
+		&dbStatusPageAnnouncementComponent{},
+		&dbOnCallSchedule{},
+		&dbOnCallOverride{},
+		&dbEscalationPolicy{},
+		&dbRunbook{},
+		&dbBrowserArtifact{},
 		&dbHeartbeatEvent{},
 	))
 }
@@ -227,10 +243,19 @@ type dbIncident struct {
 	OrganizationID       string `gorm:"type:uuid;index"`
 	MonitorID            string `gorm:"type:uuid;index"`
 	Status               string `gorm:"index"`
+	Severity             string
+	Impact               string
 	StartedAt            time.Time
 	ResolvedAt           *time.Time
 	AcknowledgedAt       *time.Time
 	AcknowledgedByUserID string
+	AssignedToUserID     string
+	ResolvedByUserID     string
+	GroupKey             string `gorm:"index"`
+	ErrorClass           string
+	Flapping             bool
+	Suppressed           bool
+	SuppressionReason    string
 	Reason               string
 	LastError            string
 	ConsecutiveFailures  int
@@ -354,6 +379,7 @@ type dbStatusPage struct {
 	CustomDomainVerified bool
 	Theme                datatypes.JSONMap `gorm:"type:jsonb"`
 	Published            bool
+	AutoUpdates          bool
 	LogoURL              string
 	PrimaryColor         string
 	Public               bool
@@ -462,10 +488,14 @@ type dbMultistepScript struct {
 func (dbMultistepScript) TableName() string { return "multistep_scripts" }
 
 type dbBrowserScript struct {
-	MonitorID string `gorm:"type:uuid;primaryKey"`
-	Source    string
-	CreatedAt time.Time
-	UpdatedAt time.Time
+	MonitorID      string `gorm:"type:uuid;primaryKey"`
+	Source         string
+	TimeoutSeconds int
+	Retries        int
+	Env            datatypes.JSONMap `gorm:"type:jsonb"`
+	RetentionDays  int
+	CreatedAt      time.Time
+	UpdatedAt      time.Time
 }
 
 func (dbBrowserScript) TableName() string { return "browser_scripts" }
@@ -747,10 +777,19 @@ func (i dbIncident) toModel() models.Incident {
 		OrganizationID:       i.OrganizationID,
 		MonitorID:            i.MonitorID,
 		Status:               models.IncidentStatus(i.Status),
+		Severity:             models.IncidentSeverity(i.Severity),
+		Impact:               models.IncidentImpact(i.Impact),
 		StartedAt:            i.StartedAt,
 		ResolvedAt:           i.ResolvedAt,
 		AcknowledgedAt:       i.AcknowledgedAt,
 		AcknowledgedByUserID: i.AcknowledgedByUserID,
+		AssignedToUserID:     i.AssignedToUserID,
+		ResolvedByUserID:     i.ResolvedByUserID,
+		GroupKey:             i.GroupKey,
+		ErrorClass:           i.ErrorClass,
+		Flapping:             i.Flapping,
+		Suppressed:           i.Suppressed,
+		SuppressionReason:    i.SuppressionReason,
 		Reason:               i.Reason,
 		LastError:            i.LastError,
 		ConsecutiveFailures:  i.ConsecutiveFailures,
@@ -765,10 +804,19 @@ func incidentRow(i models.Incident) dbIncident {
 		OrganizationID:       i.OrganizationID,
 		MonitorID:            i.MonitorID,
 		Status:               string(i.Status),
+		Severity:             string(i.Severity),
+		Impact:               string(i.Impact),
 		StartedAt:            i.StartedAt,
 		ResolvedAt:           i.ResolvedAt,
 		AcknowledgedAt:       i.AcknowledgedAt,
 		AcknowledgedByUserID: i.AcknowledgedByUserID,
+		AssignedToUserID:     i.AssignedToUserID,
+		ResolvedByUserID:     i.ResolvedByUserID,
+		GroupKey:             i.GroupKey,
+		ErrorClass:           i.ErrorClass,
+		Flapping:             i.Flapping,
+		Suppressed:           i.Suppressed,
+		SuppressionReason:    i.SuppressionReason,
 		Reason:               i.Reason,
 		LastError:            i.LastError,
 		ConsecutiveFailures:  i.ConsecutiveFailures,
@@ -1146,7 +1194,7 @@ func (s *PostgresStore) GetOpenIncident(ctx context.Context, monitorID string) (
 		return nil, err
 	}
 	q := s.db.WithContext(ctx).
-		Where("monitor_id = ? AND status = ?", monitorID, string(models.IncidentOpen)).
+		Where("monitor_id = ? AND status IN ?", monitorID, activeIncidentStatuses).
 		Order("started_at DESC")
 	if !skip {
 		q = q.Where("organization_id = ?", orgID)
@@ -1173,12 +1221,31 @@ func (s *PostgresStore) OpenIncident(ctx context.Context, incident models.Incide
 		}
 		incident.OrganizationID = orgID
 	}
-	incident.Status = models.IncidentOpen
+	if incident.Status == "" {
+		incident.Status = models.IncidentOpen
+	}
+	if incident.Severity == "" {
+		incident.Severity = models.SeverityMajor
+	}
+	if incident.Impact == "" {
+		incident.Impact = models.ImpactDegraded
+	}
 	row := incidentRow(incident)
 	if err := s.db.WithContext(ctx).Create(&row).Error; err != nil {
 		return models.Incident{}, translateError(err)
 	}
-	return row.toModel(), nil
+	created := row.toModel()
+	_, _ = s.RecordIncidentTimeline(ctx, models.IncidentTimelineEvent{
+		IncidentID: created.ID,
+		EventType:  "incident.opened",
+		Message:    created.Reason,
+		Metadata: map[string]any{
+			"severity": created.Severity,
+			"impact":   created.Impact,
+			"groupKey": created.GroupKey,
+		},
+	})
+	return created, nil
 }
 
 func (s *PostgresStore) ResolveIncident(ctx context.Context, id string) (models.Incident, error) {
@@ -1195,9 +1262,10 @@ func (s *PostgresStore) ResolveIncident(ctx context.Context, id string) (models.
 		q = q.Where("organization_id = ?", orgID)
 	}
 	result := q.Updates(map[string]any{
-		"status":      string(models.IncidentResolved),
-		"resolved_at": &now,
-		"updated_at":  now,
+		"status":              string(models.IncidentResolved),
+		"resolved_at":         &now,
+		"resolved_by_user_id": "",
+		"updated_at":          now,
 	})
 	if result.Error != nil {
 		return models.Incident{}, translateError(result.Error)
@@ -1205,7 +1273,11 @@ func (s *PostgresStore) ResolveIncident(ctx context.Context, id string) (models.
 	if result.RowsAffected == 0 {
 		return models.Incident{}, apierr.ErrNotFound
 	}
-	return s.GetIncident(ctx, id)
+	resolved, err := s.GetIncident(ctx, id)
+	if err == nil {
+		_, _ = s.RecordIncidentTimeline(ctx, models.IncidentTimelineEvent{IncidentID: id, EventType: "incident.resolved"})
+	}
+	return resolved, err
 }
 
 func (s *PostgresStore) ExportIncidents(ctx context.Context, filter models.ResultFilter) ([]models.Incident, error) {
@@ -2120,6 +2192,7 @@ func (s *PostgresStore) CreateStatusPage(ctx context.Context, page models.Status
 		CustomDomainVerified: page.CustomDomainVerified,
 		Theme:                jsonMap(page.Theme),
 		Published:            page.Published,
+		AutoUpdates:          page.AutoUpdates,
 		LogoURL:              page.LogoURL,
 		PrimaryColor:         page.PrimaryColor,
 		Public:               page.Public,
@@ -2150,6 +2223,7 @@ func (s *PostgresStore) UpdateStatusPage(ctx context.Context, page models.Status
 		"custom_domain_verified": page.CustomDomainVerified,
 		"theme":                  jsonMap(page.Theme),
 		"published":              page.Published || page.Public,
+		"auto_updates":           page.AutoUpdates,
 		"logo_url":               page.LogoURL,
 		"primary_color":          page.PrimaryColor,
 		"public":                 page.Public || page.Published,
@@ -2191,6 +2265,7 @@ func statusPageModel(row dbStatusPage) models.StatusPage {
 		CustomDomainVerified: row.CustomDomainVerified,
 		Theme:                modelJSON(row.Theme),
 		Published:            row.Published,
+		AutoUpdates:          row.AutoUpdates,
 		LogoURL:              row.LogoURL,
 		PrimaryColor:         row.PrimaryColor,
 		Public:               row.Public,
@@ -2500,14 +2575,23 @@ func (s *PostgresStore) AcknowledgeIncident(ctx context.Context, id, userID stri
 	now := time.Now().UTC()
 	result := s.db.WithContext(ctx).Model(&dbIncident{}).
 		Where("id = ? AND organization_id = ?", id, orgID).
-		Updates(map[string]any{"acknowledged_at": &now, "acknowledged_by_user_id": userID, "updated_at": now})
+		Updates(map[string]any{
+			"status":                  string(models.IncidentAcknowledged),
+			"acknowledged_at":         &now,
+			"acknowledged_by_user_id": userID,
+			"updated_at":              now,
+		})
 	if result.Error != nil {
 		return models.Incident{}, translateError(result.Error)
 	}
 	if result.RowsAffected == 0 {
 		return models.Incident{}, apierr.ErrNotFound
 	}
-	return s.GetIncident(ctx, id)
+	incident, err := s.GetIncident(ctx, id)
+	if err == nil {
+		_, _ = s.RecordIncidentTimeline(ctx, models.IncidentTimelineEvent{IncidentID: id, EventType: "incident.acknowledged", ActorUserID: userID})
+	}
+	return incident, err
 }
 
 func (s *PostgresStore) CreateTag(ctx context.Context, t models.Tag) (models.Tag, error) {
@@ -2871,11 +2955,27 @@ func multistepSteps(data datatypes.JSONMap) models.MultistepSteps {
 func (s *PostgresStore) GetBrowserScript(ctx context.Context, monitorID string) (models.BrowserScript, error) {
 	var row dbBrowserScript
 	err := s.db.WithContext(ctx).First(&row, "monitor_id = ?", monitorID).Error
-	return models.BrowserScript{MonitorID: row.MonitorID, Source: row.Source, CreatedAt: row.CreatedAt, UpdatedAt: row.UpdatedAt}, translateError(err)
+	return models.BrowserScript{
+		MonitorID:      row.MonitorID,
+		Source:         row.Source,
+		TimeoutSeconds: row.TimeoutSeconds,
+		Retries:        row.Retries,
+		Env:            redactedJSON(row.Env),
+		RetentionDays:  row.RetentionDays,
+		CreatedAt:      row.CreatedAt,
+		UpdatedAt:      row.UpdatedAt,
+	}, translateError(err)
 }
 
 func (s *PostgresStore) SetBrowserScript(ctx context.Context, script models.BrowserScript) (models.BrowserScript, error) {
-	row := dbBrowserScript{MonitorID: script.MonitorID, Source: script.Source}
+	row := dbBrowserScript{
+		MonitorID:      script.MonitorID,
+		Source:         script.Source,
+		TimeoutSeconds: script.TimeoutSeconds,
+		Retries:        script.Retries,
+		Env:            jsonMap(script.Env),
+		RetentionDays:  script.RetentionDays,
+	}
 	if err := s.db.WithContext(ctx).Save(&row).Error; err != nil {
 		return models.BrowserScript{}, translateError(err)
 	}

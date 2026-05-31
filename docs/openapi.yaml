@@ -344,6 +344,184 @@ paths:
           schema: { type: string }
       responses:
         "200": { description: Heartbeat recorded }
+  /api/v1/incidents/{id}/state:
+    post:
+      summary: Transition incident state
+      parameters:
+        - $ref: "#/components/parameters/id"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/IncidentTransition" }
+      responses:
+        "200": { description: Updated incident }
+  /api/v1/incidents/{id}/timeline:
+    get:
+      summary: List incident timeline events
+      parameters:
+        - $ref: "#/components/parameters/id"
+        - name: limit
+          in: query
+          schema: { type: integer }
+        - name: offset
+          in: query
+          schema: { type: integer }
+      responses:
+        "200": { description: Timeline events }
+  /api/v1/incidents/{id}/comments:
+    get:
+      summary: List incident comments
+      parameters:
+        - $ref: "#/components/parameters/id"
+      responses:
+        "200": { description: Incident comments }
+    post:
+      summary: Create incident comment
+      parameters:
+        - $ref: "#/components/parameters/id"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/IncidentComment" }
+      responses:
+        "201": { description: Created comment }
+  /api/v1/incidents/{id}/postmortem:
+    get:
+      summary: Get incident post-mortem
+      parameters:
+        - $ref: "#/components/parameters/id"
+      responses:
+        "200": { description: Post-mortem }
+    put:
+      summary: Create or update incident post-mortem
+      parameters:
+        - $ref: "#/components/parameters/id"
+      responses:
+        "200": { description: Updated post-mortem }
+  /api/v1/incidents/{id}/action-items:
+    get:
+      summary: List incident action items
+      parameters:
+        - $ref: "#/components/parameters/id"
+      responses:
+        "200": { description: Action items }
+    post:
+      summary: Create incident action item
+      parameters:
+        - $ref: "#/components/parameters/id"
+      responses:
+        "201": { description: Created action item }
+  /api/v1/monitors/{id}/dependencies:
+    get:
+      summary: List monitor dependencies
+      parameters:
+        - $ref: "#/components/parameters/id"
+      responses:
+        "200": { description: Monitor dependencies }
+    put:
+      summary: Replace monitor dependencies
+      parameters:
+        - $ref: "#/components/parameters/id"
+      responses:
+        "200": { description: Updated dependencies }
+  /api/v1/agents:
+    get:
+      summary: List private agents
+      responses:
+        "200": { description: Agent list }
+    post:
+      summary: Provision private agent token
+      responses:
+        "201": { description: Agent and one-time token }
+  /api/v1/agent/jobs:
+    get:
+      security: []
+      summary: Poll assigned private-agent jobs
+      responses:
+        "200": { description: Agent jobs }
+  /api/v1/agent/results:
+    post:
+      security: []
+      summary: Submit private-agent check result
+      responses:
+        "200": { description: Stored check result }
+  /api/v1/status-pages/{id}/subscribers:
+    get:
+      summary: List status page subscribers
+      parameters:
+        - $ref: "#/components/parameters/id"
+      responses:
+        "200": { description: Subscribers }
+  /api/v1/status-pages/{id}/announcements:
+    get:
+      summary: List status page announcements
+      parameters:
+        - $ref: "#/components/parameters/id"
+      responses:
+        "200": { description: Announcements }
+    post:
+      summary: Publish status page announcement
+      parameters:
+        - $ref: "#/components/parameters/id"
+      responses:
+        "201": { description: Created announcement }
+  /s/{slug}/subscribe:
+    post:
+      security: []
+      summary: Subscribe to a public status page
+      parameters:
+        - name: slug
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        "201": { description: Subscriber created pending confirmation }
+  /api/v1/on-call/schedules:
+    get:
+      summary: List on-call schedules
+      responses:
+        "200": { description: Schedules }
+    post:
+      summary: Create on-call schedule
+      responses:
+        "201": { description: Created schedule }
+  /api/v1/on-call/schedules/{id}/current:
+    get:
+      summary: Resolve current on-call shift
+      parameters:
+        - $ref: "#/components/parameters/id"
+        - name: at
+          in: query
+          schema: { type: string, format: date-time }
+      responses:
+        "200": { description: Current shift }
+  /api/v1/escalation-policies:
+    get:
+      summary: List escalation policies
+      responses:
+        "200": { description: Policies }
+    post:
+      summary: Create escalation policy
+      responses:
+        "201": { description: Created policy }
+  /api/v1/runbooks:
+    get:
+      summary: List runbooks
+      responses:
+        "200": { description: Runbooks }
+    post:
+      summary: Create runbook
+      responses:
+        "201": { description: Created runbook }
+  /api/v1/browser-artifacts/{id}/download:
+    get:
+      summary: Download authenticated browser artifact
+      parameters:
+        - $ref: "#/components/parameters/id"
+      responses:
+        "200": { description: Artifact bytes }
 components:
   securitySchemes:
     bearerAuth:
@@ -362,7 +540,7 @@ components:
       required: [name, type, target]
       properties:
         name: { type: string }
-        type: { type: string, enum: [http, api, tcp, udp, dns, tls, keyword, domain, ping, heartbeat] }
+        type: { type: string, enum: [http, api, tcp, udp, dns, tls, keyword, heartbeat, icmp, ping, browser, domain, multistep] }
         target: { type: string }
         method: { type: string, example: GET }
         expectedStatus: { type: integer, example: 200 }
@@ -414,6 +592,8 @@ components:
         logoUrl: { type: string }
         primaryColor: { type: string }
         public: { type: boolean }
+        published: { type: boolean }
+        autoUpdates: { type: boolean }
         noIndex: { type: boolean }
     StatusPageComponent:
       type: object
@@ -429,3 +609,52 @@ components:
         monitorIds:
           type: array
           items: { type: string }
+    IncidentTransition:
+      type: object
+      required: [status]
+      properties:
+        status: { type: string, enum: [open, acknowledged, investigating, identified, monitoring, resolved] }
+        severity: { type: string, enum: [info, warning, minor, major, critical] }
+        impact: { type: string, enum: [none, degraded, partial_outage, full_outage] }
+        assignedToUserId: { type: string }
+        message: { type: string }
+    IncidentComment:
+      type: object
+      required: [body]
+      properties:
+        body: { type: string }
+        visibility: { type: string, enum: [internal, public] }
+    OnCallSchedule:
+      type: object
+      required: [name, timezone, participants, rotationSeconds]
+      properties:
+        name: { type: string }
+        timezone: { type: string, example: Australia/Sydney }
+        participants:
+          type: array
+          items: { type: string }
+        rotationSeconds: { type: integer }
+        handoffAt: { type: string, format: date-time }
+    EscalationPolicy:
+      type: object
+      required: [name]
+      properties:
+        name: { type: string }
+        enabled: { type: boolean }
+        monitorId: { type: string }
+        serviceId: { type: string }
+        tagName: { type: string }
+        severity: { type: string, enum: [info, warning, minor, major, critical] }
+        impact: { type: string, enum: [none, degraded, partial_outage, full_outage] }
+        steps:
+          type: array
+          items:
+            type: object
+            properties:
+              delaySeconds: { type: integer }
+              channelIds:
+                type: array
+                items: { type: string }
+              scheduleId: { type: string }
+              targetUserId: { type: string }
+              method: { type: string }

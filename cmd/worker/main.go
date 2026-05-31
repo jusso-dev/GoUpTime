@@ -100,6 +100,9 @@ func run() int {
 		notifications.NewWebhookProvider(notifier),
 		notifications.NewSlackProvider(cfg.HTTPUserAgent, cfg.WebhookTimeout()),
 		notifications.NewPushProvider(store, cfg.HTTPUserAgent, cfg.ExpoAccessToken, cfg.WebhookTimeout()),
+		notifications.NewTwilioProvider("twilio_sms", cfg.HTTPUserAgent, cfg.WebhookTimeout()),
+		notifications.NewTwilioProvider("twilio_voice", cfg.HTTPUserAgent, cfg.WebhookTimeout()),
+		notifications.NewSNSSMSProvider(cfg.HTTPUserAgent, cfg.WebhookTimeout()),
 	)
 	monitorSvc := service.NewMonitoringService(store, registry, notifier, m, true).
 		WithRegion(cfg.WorkerRegion).

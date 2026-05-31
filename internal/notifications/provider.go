@@ -15,11 +15,13 @@ import (
 // receives. Provider implementations translate it into their own wire
 // shape (Slack Block Kit, Expo push body, etc.).
 type Event struct {
-	Type        string         // incident.opened | incident.resolved | incident.acknowledged
+	Type        string // incident.opened | incident.resolved | incident.acknowledged
 	IncidentID  string
 	MonitorID   string
 	MonitorName string
 	Status      string
+	Severity    string
+	Impact      string
 	Reason      string
 	StartedAt   string
 	ResolvedAt  string

@@ -11,9 +11,13 @@ UpTime started as a small uptime-check API. This rebuild turns the same idea int
 - HTTP timing details through `httptrace`: DNS, TCP connect, TLS handshake, first byte, total duration
 - PostgreSQL tables for monitors, check results, incidents, notification channels, API keys, and audit logs
 - Worker process with goroutines, channels, context cancellation, duplicate-check avoidance, and graceful shutdown
-- Incident lifecycle: opens after `failureThreshold` consecutive failures and resolves on recovery
-- Webhook, SMTP, and chat notification channels for incident open/resolve events
+- Incident lifecycle with acknowledgement, investigation, severity, impact, timeline evidence, comments, post-mortems, and action items
+- Alert-quality controls for regional quorum, dependency suppression, grouping, flapping cooldown, and maintenance suppression
+- Webhook, Slack, push, SMTP, chat, Twilio SMS/voice, and AWS SNS SMS notification channels for incident events
 - Monitor tags, services, maintenance windows, public status pages, and uptime reports
+- Status page subscribers, public announcements, and automatic incident updates
+- Remote/private agents that poll assigned checks and submit regional results
+- On-call schedules, overrides, escalation policies, runbooks, and browser synthetic artifacts
 - API key authentication with hashed stored keys and a bootstrap admin key
 - Prometheus metrics for API requests, checks, incidents, and worker jobs
 - Docker Compose stack with API, worker, Postgres, Redis, Prometheus, and Grafana
@@ -177,10 +181,33 @@ Redis is part of the local stack and health reporting. The current worker uses l
 - `domain`: checks domain expiration through RDAP.
 - `ping`: TCP reachability ping for environments where raw ICMP is not available.
 - `heartbeat`: records inbound pings and opens incidents when check-ins are late or missing.
+- `browser`: submits a Playwright transaction job to the optional browser worker sidecar and records screenshots, console errors, network failures, and artifact references.
 
 ## Incident Lifecycle
 
-Checks are stored in `check_results`. A monitor opens an incident only after `failureThreshold` consecutive failures. A succeeding check resolves the open incident. Webhook notifications are sent on both transitions and attempts are recorded in `notification_events`.
+Checks are stored in `check_results`. A monitor opens an incident only after `failureThreshold` consecutive failures, any configured regional quorum is met, no parent dependency is already down, and the monitor is not flapping. A succeeding check resolves the active incident.
+
+Incidents support `open`, `acknowledged`, `investigating`, `identified`, `monitoring`, and `resolved` states, plus severity (`info`, `warning`, `minor`, `major`, `critical`) and impact (`none`, `degraded`, `partial_outage`, `full_outage`). Timeline events capture state changes, check evidence, comments, escalation decisions, and recovery context with sensitive keys redacted.
+
+Post-mortems can be attached to resolved incidents and exported as Markdown. Action items track owner, due date, and completion state.
+
+## Communication And Response
+
+Status pages can collect confirmed subscribers, publish announcements, and auto-publish incident updates for affected components. Subscriber confirmation and unsubscribe links use hashed one-time tokens.
+
+Remote/private agents are provisioned with scoped tokens. Agents call `/api/v1/agent/jobs` for assigned checks, submit results to `/api/v1/agent/results`, and heartbeat through `/api/v1/agent/heartbeat`.
+
+On-call schedules rotate participants from a timezone-aware handoff time, support temporary overrides, and expose current/upcoming shift APIs. Escalation policies can route by monitor, service, tag, severity, and impact, and incident timelines record the selected policy.
+
+## Browser Transactions
+
+Browser monitors use a Redis job contract so the Go worker remains lightweight. Run the optional Playwright sidecar with:
+
+```bash
+docker compose --profile browser up browser-worker
+```
+
+The sidecar executes saved scripts in an isolated Playwright context, captures failure screenshots, console errors, network failures, and emits artifact metadata. Artifact records include retention timestamps and authenticated download endpoints.
 
 ## Observability
 
@@ -215,13 +242,11 @@ make test
 make check
 ```
 
-The test suite covers HTTP checker success, timeout, expected-status mismatch, SSRF blocking, TCP success/failure, DNS success/failure, TLS expiry classification, API key hashing, and incident open/resolve rules.
+The test suite covers HTTP checker success, timeout, expected-status mismatch, SSRF blocking, TCP success/failure, DNS success/failure, TLS expiry classification, API key hashing, incident open/resolve rules, regional quorum, dependency suppression, flapping suppression, SMS payload construction, and on-call rotation math.
 
 ## Roadmap
 
-- Redis-backed distributed queue and locks
-- Browser transaction monitoring
-- Multi-tenant organisations
-- Remote monitoring agents
-- Optional React/Next.js dashboard
-- Elasticsearch/Kibana analytics as a future optional integration
+- API/UI polish for the growing response workflows
+- Terraform, Helm, and CLI automation
+- OIDC SSO, RBAC hardening, encrypted secrets, and audit UI
+- OpenTelemetry export and long-term artifact storage

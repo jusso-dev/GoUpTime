@@ -5,6 +5,8 @@ import "time"
 type MonitorType string
 type CheckStatus string
 type IncidentStatus string
+type IncidentSeverity string
+type IncidentImpact string
 
 const (
 	MonitorHTTP      MonitorType = "http"
@@ -25,8 +27,23 @@ const (
 	StatusDown     CheckStatus = "down"
 	StatusDegraded CheckStatus = "degraded"
 
-	IncidentOpen     IncidentStatus = "open"
-	IncidentResolved IncidentStatus = "resolved"
+	IncidentOpen          IncidentStatus = "open"
+	IncidentAcknowledged  IncidentStatus = "acknowledged"
+	IncidentInvestigating IncidentStatus = "investigating"
+	IncidentIdentified    IncidentStatus = "identified"
+	IncidentMonitoring    IncidentStatus = "monitoring"
+	IncidentResolved      IncidentStatus = "resolved"
+
+	SeverityInfo     IncidentSeverity = "info"
+	SeverityWarning  IncidentSeverity = "warning"
+	SeverityMinor    IncidentSeverity = "minor"
+	SeverityMajor    IncidentSeverity = "major"
+	SeverityCritical IncidentSeverity = "critical"
+
+	ImpactNone          IncidentImpact = "none"
+	ImpactDegraded      IncidentImpact = "degraded"
+	ImpactPartialOutage IncidentImpact = "partial_outage"
+	ImpactFullOutage    IncidentImpact = "full_outage"
 )
 
 // Monitor is the canonical synthetic-check definition. Status, CreatedAt,
@@ -93,26 +110,113 @@ type CheckResult struct {
 }
 
 type Incident struct {
-	ID                   string         `json:"id"`
-	OrganizationID       string         `json:"organizationId"`
-	MonitorID            string         `json:"monitorId"`
-	Status               IncidentStatus `json:"status"`
-	StartedAt            time.Time      `json:"startedAt"`
-	ResolvedAt           *time.Time     `json:"resolvedAt,omitempty"`
-	AcknowledgedAt       *time.Time     `json:"acknowledgedAt,omitempty"`
-	AcknowledgedByUserID string         `json:"acknowledgedByUserId,omitempty"`
-	Reason               string         `json:"reason"`
-	LastError            string         `json:"lastError,omitempty"`
-	ConsecutiveFailures  int            `json:"consecutiveFailures"`
-	CreatedAt            time.Time      `json:"createdAt"`
-	UpdatedAt            time.Time      `json:"updatedAt"`
+	ID                   string           `json:"id"`
+	OrganizationID       string           `json:"organizationId"`
+	MonitorID            string           `json:"monitorId"`
+	Status               IncidentStatus   `json:"status"`
+	Severity             IncidentSeverity `json:"severity"`
+	Impact               IncidentImpact   `json:"impact"`
+	StartedAt            time.Time        `json:"startedAt"`
+	ResolvedAt           *time.Time       `json:"resolvedAt,omitempty"`
+	AcknowledgedAt       *time.Time       `json:"acknowledgedAt,omitempty"`
+	AcknowledgedByUserID string           `json:"acknowledgedByUserId,omitempty"`
+	AssignedToUserID     string           `json:"assignedToUserId,omitempty"`
+	ResolvedByUserID     string           `json:"resolvedByUserId,omitempty"`
+	GroupKey             string           `json:"groupKey,omitempty"`
+	ErrorClass           string           `json:"errorClass,omitempty"`
+	Flapping             bool             `json:"flapping,omitempty"`
+	Suppressed           bool             `json:"suppressed,omitempty"`
+	SuppressionReason    string           `json:"suppressionReason,omitempty"`
+	Reason               string           `json:"reason"`
+	LastError            string           `json:"lastError,omitempty"`
+	ConsecutiveFailures  int              `json:"consecutiveFailures"`
+	CreatedAt            time.Time        `json:"createdAt"`
+	UpdatedAt            time.Time        `json:"updatedAt"`
+}
+
+type IncidentTransition struct {
+	Status           IncidentStatus   `json:"status" binding:"required,oneof=open acknowledged investigating identified monitoring resolved"`
+	Severity         IncidentSeverity `json:"severity,omitempty" binding:"omitempty,oneof=info warning minor major critical"`
+	Impact           IncidentImpact   `json:"impact,omitempty" binding:"omitempty,oneof=none degraded partial_outage full_outage"`
+	AssignedToUserID string           `json:"assignedToUserId,omitempty"`
+	Message          string           `json:"message,omitempty"`
+}
+
+type IncidentTimelineEvent struct {
+	ID             string         `json:"id"`
+	OrganizationID string         `json:"organizationId"`
+	IncidentID     string         `json:"incidentId"`
+	EventType      string         `json:"eventType"`
+	ActorUserID    string         `json:"actorUserId,omitempty"`
+	Message        string         `json:"message,omitempty"`
+	Metadata       map[string]any `json:"metadata,omitempty"`
+	Evidence       map[string]any `json:"evidence,omitempty"`
+	CreatedAt      time.Time      `json:"createdAt"`
+}
+
+type IncidentComment struct {
+	ID             string    `json:"id"`
+	OrganizationID string    `json:"organizationId"`
+	IncidentID     string    `json:"incidentId"`
+	AuthorUserID   string    `json:"authorUserId,omitempty"`
+	Body           string    `json:"body" binding:"required,min=1"`
+	Visibility     string    `json:"visibility" binding:"omitempty,oneof=internal public"`
+	CreatedAt      time.Time `json:"createdAt"`
+	UpdatedAt      time.Time `json:"updatedAt"`
+}
+
+type IncidentPostmortem struct {
+	ID                  string    `json:"id"`
+	OrganizationID      string    `json:"organizationId"`
+	IncidentID          string    `json:"incidentId"`
+	Summary             string    `json:"summary,omitempty"`
+	RootCause           string    `json:"rootCause,omitempty"`
+	Impact              string    `json:"impact,omitempty"`
+	Timeline            string    `json:"timeline,omitempty"`
+	ContributingFactors []string  `json:"contributingFactors,omitempty"`
+	CreatedByUserID     string    `json:"createdByUserId,omitempty"`
+	UpdatedByUserID     string    `json:"updatedByUserId,omitempty"`
+	CreatedAt           time.Time `json:"createdAt"`
+	UpdatedAt           time.Time `json:"updatedAt"`
+}
+
+type IncidentActionItem struct {
+	ID                string     `json:"id"`
+	OrganizationID    string     `json:"organizationId"`
+	IncidentID        string     `json:"incidentId"`
+	PostmortemID      string     `json:"postmortemId,omitempty"`
+	Title             string     `json:"title" binding:"required,min=1"`
+	Description       string     `json:"description,omitempty"`
+	OwnerUserID       string     `json:"ownerUserId,omitempty"`
+	DueAt             *time.Time `json:"dueAt,omitempty"`
+	CompletedAt       *time.Time `json:"completedAt,omitempty"`
+	CompletedByUserID string     `json:"completedByUserId,omitempty"`
+	CreatedAt         time.Time  `json:"createdAt"`
+	UpdatedAt         time.Time  `json:"updatedAt"`
+}
+
+type IncidentSuppression struct {
+	ID             string    `json:"id"`
+	OrganizationID string    `json:"organizationId"`
+	MonitorID      string    `json:"monitorId"`
+	Reason         string    `json:"reason"`
+	Details        string    `json:"details,omitempty"`
+	CreatedAt      time.Time `json:"createdAt"`
+}
+
+type MonitorDependency struct {
+	ID                 string    `json:"id"`
+	OrganizationID     string    `json:"organizationId"`
+	MonitorID          string    `json:"monitorId"`
+	DependsOnMonitorID string    `json:"dependsOnMonitorId"`
+	CreatedAt          time.Time `json:"createdAt"`
 }
 
 type NotificationChannel struct {
 	ID             string `json:"id"`
 	OrganizationID string `json:"organizationId"`
 	Name           string `json:"name" binding:"required,min=1,max=120"`
-	Type           string `json:"type" binding:"required,oneof=webhook slack email smtp pagerduty push discord teams telegram google_chat"`
+	Type           string `json:"type" binding:"required,oneof=webhook slack email smtp pagerduty push discord teams telegram google_chat twilio_sms twilio_voice aws_sns_sms"`
 	// URL is kept for backwards-compat with webhook channels; new
 	// integrations carry their config in Config jsonb.
 	URL       string         `json:"url,omitempty" binding:"omitempty,url,max=2048"`
@@ -308,10 +412,14 @@ type MultistepAssertion struct {
 // browser-worker sidecar. The Go API stores and serves it but the actual
 // execution happens out-of-process in Node.
 type BrowserScript struct {
-	MonitorID string    `json:"monitorId"`
-	Source    string    `json:"source"`
-	CreatedAt time.Time `json:"createdAt"`
-	UpdatedAt time.Time `json:"updatedAt"`
+	MonitorID      string         `json:"monitorId"`
+	Source         string         `json:"source"`
+	TimeoutSeconds int            `json:"timeoutSeconds,omitempty"`
+	Retries        int            `json:"retries,omitempty"`
+	Env            map[string]any `json:"env,omitempty"`
+	RetentionDays  int            `json:"retentionDays,omitempty"`
+	CreatedAt      time.Time      `json:"createdAt"`
+	UpdatedAt      time.Time      `json:"updatedAt"`
 }
 
 // StatusPage is the public-facing status surface for one organization.
@@ -328,12 +436,39 @@ type StatusPage struct {
 	CustomDomainVerified bool           `json:"customDomainVerified"`
 	Theme                map[string]any `json:"theme,omitempty"`
 	Published            bool           `json:"published"`
+	AutoUpdates          bool           `json:"autoUpdates"`
 	LogoURL              string         `json:"logoUrl,omitempty"`
 	PrimaryColor         string         `json:"primaryColor,omitempty"`
 	Public               bool           `json:"public"`
 	NoIndex              bool           `json:"noIndex"`
 	CreatedAt            time.Time      `json:"createdAt"`
 	UpdatedAt            time.Time      `json:"updatedAt"`
+}
+
+type StatusPageSubscriber struct {
+	ID             string     `json:"id"`
+	OrganizationID string     `json:"organizationId"`
+	StatusPageID   string     `json:"statusPageId"`
+	Email          string     `json:"email" binding:"required,email"`
+	ConfirmedAt    *time.Time `json:"confirmedAt,omitempty"`
+	ComponentIDs   []string   `json:"componentIds,omitempty"`
+	CreatedAt      time.Time  `json:"createdAt"`
+	UpdatedAt      time.Time  `json:"updatedAt"`
+}
+
+type StatusPageAnnouncement struct {
+	ID             string     `json:"id"`
+	OrganizationID string     `json:"organizationId"`
+	StatusPageID   string     `json:"statusPageId"`
+	Type           string     `json:"type" binding:"omitempty,oneof=general maintenance incident"`
+	Title          string     `json:"title" binding:"required,min=1"`
+	Body           string     `json:"body,omitempty"`
+	Status         string     `json:"status" binding:"omitempty,oneof=draft published archived"`
+	IncidentID     string     `json:"incidentId,omitempty"`
+	ComponentIDs   []string   `json:"componentIds,omitempty"`
+	PublishedAt    *time.Time `json:"publishedAt,omitempty"`
+	CreatedAt      time.Time  `json:"createdAt"`
+	UpdatedAt      time.Time  `json:"updatedAt"`
 }
 
 // StatusPageComponent groups monitors into a single visual unit on the
@@ -477,4 +612,106 @@ type WorkerHeartbeat struct {
 	// Stale is set by the API when LastSeenAt is older than the freshness
 	// window. Workers never write to it.
 	Stale bool `json:"stale,omitempty"`
+}
+
+type Agent struct {
+	ID             string     `json:"id"`
+	OrganizationID string     `json:"organizationId"`
+	Name           string     `json:"name" binding:"required,min=1,max=120"`
+	Region         string     `json:"region" binding:"required,min=1,max=80"`
+	TokenHash      string     `json:"-"`
+	LastSeenAt     *time.Time `json:"lastSeenAt,omitempty"`
+	RevokedAt      *time.Time `json:"revokedAt,omitempty"`
+	CreatedAt      time.Time  `json:"createdAt"`
+	UpdatedAt      time.Time  `json:"updatedAt"`
+}
+
+type AgentJob struct {
+	ID        string    `json:"id"`
+	AgentID   string    `json:"agentId"`
+	Monitor   Monitor   `json:"monitor"`
+	IssuedAt  time.Time `json:"issuedAt"`
+	ExpiresAt time.Time `json:"expiresAt"`
+}
+
+type OnCallSchedule struct {
+	ID              string    `json:"id"`
+	OrganizationID  string    `json:"organizationId"`
+	Name            string    `json:"name" binding:"required,min=1,max=120"`
+	Timezone        string    `json:"timezone" binding:"required"`
+	Participants    []string  `json:"participants" binding:"required"`
+	RotationSeconds int       `json:"rotationSeconds" binding:"required,min=60"`
+	HandoffAt       time.Time `json:"handoffAt"`
+	CreatedAt       time.Time `json:"createdAt"`
+	UpdatedAt       time.Time `json:"updatedAt"`
+}
+
+type OnCallOverride struct {
+	ID             string    `json:"id"`
+	OrganizationID string    `json:"organizationId"`
+	ScheduleID     string    `json:"scheduleId"`
+	UserID         string    `json:"userId" binding:"required"`
+	StartsAt       time.Time `json:"startsAt"`
+	EndsAt         time.Time `json:"endsAt"`
+	CreatedAt      time.Time `json:"createdAt"`
+	UpdatedAt      time.Time `json:"updatedAt"`
+}
+
+type OnCallShift struct {
+	ScheduleID string    `json:"scheduleId"`
+	UserID     string    `json:"userId"`
+	StartsAt   time.Time `json:"startsAt"`
+	EndsAt     time.Time `json:"endsAt"`
+	Override   bool      `json:"override,omitempty"`
+}
+
+type EscalationStep struct {
+	DelaySeconds int      `json:"delaySeconds"`
+	ChannelIDs   []string `json:"channelIds,omitempty"`
+	ScheduleID   string   `json:"scheduleId,omitempty"`
+	TargetUserID string   `json:"targetUserId,omitempty"`
+	Method       string   `json:"method,omitempty"`
+}
+
+type EscalationPolicy struct {
+	ID             string           `json:"id"`
+	OrganizationID string           `json:"organizationId"`
+	Name           string           `json:"name" binding:"required,min=1,max=120"`
+	Enabled        bool             `json:"enabled"`
+	ServiceID      string           `json:"serviceId,omitempty"`
+	MonitorID      string           `json:"monitorId,omitempty"`
+	TagName        string           `json:"tagName,omitempty"`
+	Severity       IncidentSeverity `json:"severity,omitempty"`
+	Impact         IncidentImpact   `json:"impact,omitempty"`
+	Steps          []EscalationStep `json:"steps"`
+	CreatedAt      time.Time        `json:"createdAt"`
+	UpdatedAt      time.Time        `json:"updatedAt"`
+}
+
+type Runbook struct {
+	ID             string           `json:"id"`
+	OrganizationID string           `json:"organizationId"`
+	Title          string           `json:"title" binding:"required,min=1,max=160"`
+	URL            string           `json:"url,omitempty"`
+	Content        string           `json:"content,omitempty"`
+	MonitorID      string           `json:"monitorId,omitempty"`
+	ServiceID      string           `json:"serviceId,omitempty"`
+	TagName        string           `json:"tagName,omitempty"`
+	Severity       IncidentSeverity `json:"severity,omitempty"`
+	CreatedAt      time.Time        `json:"createdAt"`
+	UpdatedAt      time.Time        `json:"updatedAt"`
+}
+
+type BrowserArtifact struct {
+	ID             string         `json:"id"`
+	OrganizationID string         `json:"organizationId"`
+	MonitorID      string         `json:"monitorId"`
+	CheckResultID  string         `json:"checkResultId,omitempty"`
+	Type           string         `json:"type"`
+	Path           string         `json:"path,omitempty"`
+	Public         bool           `json:"public"`
+	SizeBytes      int64          `json:"sizeBytes,omitempty"`
+	ExpiresAt      *time.Time     `json:"expiresAt,omitempty"`
+	Metadata       map[string]any `json:"metadata,omitempty"`
+	CreatedAt      time.Time      `json:"createdAt"`
 }

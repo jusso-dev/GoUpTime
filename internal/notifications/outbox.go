@@ -1,7 +1,7 @@
 // Outbox poller. Drains pending notification_outbox rows, hands each
 // to the right Provider, and updates the row to delivered or schedules
-// a retry. FOR UPDATE SKIP LOCKED inside the claim query means several
-// poller replicas can run concurrently without stepping on each other.
+// a retry. The repository claim operation is concurrency-safe so several
+// poller replicas can run at the same time without stepping on each other.
 
 package notifications
 

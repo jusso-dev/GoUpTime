@@ -8,6 +8,7 @@ services:
       METRICS_PORT: 8009
       DATABASE_URL: postgres://uptime:uptime@postgres:5432/uptime?sslmode=disable
       REDIS_URL: redis://redis:6379/0
+      BROWSER_CHECK_ENABLED: "true"
       UPTIME_BOOTSTRAP_API_KEY: dev_admin_key_change_me
       ALLOW_PRIVATE_TARGETS: "false"
       CHECK_WORKER_COUNT: 10
@@ -40,6 +41,7 @@ services:
       METRICS_PORT: 8009
       DATABASE_URL: postgres://uptime:uptime@postgres:5432/uptime?sslmode=disable
       REDIS_URL: redis://redis:6379/0
+      BROWSER_CHECK_ENABLED: "true"
       UPTIME_BOOTSTRAP_API_KEY: dev_admin_key_change_me
       ALLOW_PRIVATE_TARGETS: "false"
       CHECK_WORKER_COUNT: 10
@@ -54,6 +56,21 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
+      redis:
+        condition: service_started
+    restart: unless-stopped
+
+  browser-worker:
+    build:
+      context: .
+      dockerfile: Dockerfile.browser-worker
+    profiles: ["browser"]
+    environment:
+      REDIS_URL: redis://redis:6379/0
+      BROWSER_ARTIFACT_DIR: /artifacts
+    volumes:
+      - browser-artifacts:/artifacts
+    depends_on:
       redis:
         condition: service_started
     restart: unless-stopped
@@ -99,3 +116,4 @@ services:
 
 volumes:
   postgres-data:
+  browser-artifacts:
