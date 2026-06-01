@@ -81,6 +81,8 @@ func NewRouter(cfg config.Config, store repository.Store, redisClient *redis.Cli
 	r.POST("/s/:slug/subscribe", s.publicStatusSubscribe)
 	r.GET("/s/:slug/subscribers/confirm", s.publicStatusConfirmSubscriber)
 	r.GET("/s/:slug/unsubscribe", s.publicStatusUnsubscribe)
+	r.GET("/app", s.consoleApp)
+	r.GET("/app/*filepath", s.consoleApp)
 	r.POST("/api/v1/agent/heartbeat", s.agentHeartbeat)
 	r.GET("/api/v1/agent/jobs", s.agentJobs)
 	r.POST("/api/v1/agent/results", s.agentSubmitResult)
@@ -209,6 +211,21 @@ func NewRouter(cfg config.Config, store repository.Store, redisClient *redis.Cli
 func (s *Server) workersDashboard(c *gin.Context) {
 	c.Header("Cache-Control", "public, max-age=30")
 	c.Data(http.StatusOK, "text/html; charset=utf-8", web.WorkersHTML)
+}
+
+func (s *Server) consoleApp(c *gin.Context) {
+	dist, err := web.ConsoleDist()
+	if err != nil {
+		s.respond(c, nil, err)
+		return
+	}
+	if strings.HasPrefix(c.Param("filepath"), "/assets/") {
+		c.Header("Cache-Control", "public, max-age=31536000, immutable")
+		http.StripPrefix("/app/", http.FileServer(http.FS(dist))).ServeHTTP(c.Writer, c.Request)
+		return
+	}
+	c.Header("Cache-Control", "no-store")
+	c.FileFromFS("index.html", http.FS(dist))
 }
 
 func (s *Server) health(c *gin.Context) {

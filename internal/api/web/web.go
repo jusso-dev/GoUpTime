@@ -4,10 +4,20 @@
 // the workers dashboard or the public status page.
 package web
 
-import _ "embed"
+import (
+	"embed"
+	"io/fs"
+)
 
 //go:embed workers.html
 var WorkersHTML []byte
 
 //go:embed statuspage.html
 var StatusPageHTML string
+
+//go:embed console/dist/*
+var consoleDist embed.FS
+
+func ConsoleDist() (fs.FS, error) {
+	return fs.Sub(consoleDist, "console/dist")
+}

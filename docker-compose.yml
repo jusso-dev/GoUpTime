@@ -94,6 +94,7 @@ services:
 
   prometheus:
     image: prom/prometheus:v2.55.0
+    profiles: ["external-metrics"]
     ports:
       - "9090:9090"
     volumes:
@@ -104,6 +105,7 @@ services:
 
   grafana:
     image: grafana/grafana:11.2.2
+    profiles: ["external-metrics"]
     ports:
       - "3000:3000"
     environment:

@@ -1,11 +1,12 @@
 # UpTime
 
-A self-hosted uptime and synthetic monitoring platform built with Go, Gin, PostgreSQL, Redis, worker pools, Prometheus metrics, and webhook notifications.
+A self-hosted uptime and synthetic monitoring platform built with Go, Gin, PostgreSQL, Redis, worker pools, a first-party web console, and incident notifications.
 
 UpTime started as a small uptime-check API. This rebuild turns the same idea into a backend-first portfolio project with real persistence, scheduler/worker separation, incident handling, API-key auth, metrics, and Docker Compose.
 
 ## Features
 
+- First-party React console at `GET /app` for monitors, incidents, agents, status pages, on-call, runbooks, and check events
 - Gin REST API with `GET /health`, legacy `GET /health-check`, and legacy `POST /ping-endpoint`
 - HTTP, API assertion, keyword, TCP, UDP, DNS, TLS, domain-expiry, ping, and heartbeat checks
 - HTTP timing details through `httptrace`: DNS, TCP connect, TLS handshake, first byte, total duration
@@ -19,8 +20,9 @@ UpTime started as a small uptime-check API. This rebuild turns the same idea int
 - Remote/private agents that poll assigned checks and submit regional results
 - On-call schedules, overrides, escalation policies, runbooks, and browser synthetic artifacts
 - API key authentication with hashed stored keys and a bootstrap admin key
-- Prometheus metrics for API requests, checks, incidents, and worker jobs
-- Docker Compose stack with API, worker, Postgres, Redis, Prometheus, and Grafana
+- Built-in event stream from checks, incidents, workers, agents, and status communication
+- Optional scrape metrics for teams that want an external metrics stack
+- Docker Compose stack with API, worker, Postgres, Redis, and optional browser worker
 
 ## Screenshots
 
@@ -41,15 +43,15 @@ These screenshots were captured from the live Docker Compose stack.
 ```mermaid
 flowchart LR
   User[User / API Client] --> API[Go Gin API]
+  Console[React Console] --> API
   API --> Postgres[(PostgreSQL)]
   API --> Redis[(Redis)]
   Worker[Go Worker Pool] --> Postgres
   Worker --> Redis
   Worker --> Targets[Websites / TCP / DNS / TLS Targets]
   Worker --> Notify[Webhook Notifications]
-  Prometheus --> API
-  Prometheus --> Worker
-  Grafana --> Prometheus
+  Browser[Browser Worker] --> Redis
+  Browser --> Artifacts[(Artifacts)]
 ```
 
 ## Tech Stack
@@ -58,7 +60,8 @@ flowchart LR
 - Gin
 - PostgreSQL via GORM
 - Redis
-- Prometheus client library
+- React and Vite for the embedded console
+- Optional Prometheus client library
 - Structured logging with `slog`
 - Docker Compose
 
@@ -71,6 +74,14 @@ make docker-up
 ```
 
 API: `http://localhost:8008`
+
+Console: `http://localhost:8008/app`
+
+Optional external metrics stack:
+
+```bash
+make metrics-up
+```
 
 Prometheus: `http://localhost:9090`
 
@@ -87,6 +98,14 @@ make migrate # runs GORM-managed schema migration
 go run ./cmd/api
 go run ./cmd/worker
 ```
+
+Run the console dev server:
+
+```bash
+make console-dev
+```
+
+The Vite server proxies API requests to `http://localhost:8008`.
 
 ## Environment
 
@@ -211,9 +230,11 @@ The sidecar executes saved scripts in an isolated Playwright context, captures f
 
 ## Observability
 
+The first-party console uses API data directly: monitor state, check results, incident timelines, worker heartbeats, private agents, status announcements, and on-call schedules. `GET /app` is the default operational view.
+
 `GET /metrics` exposes API metrics. The worker exposes metrics on `:8009/metrics`.
 
-Prometheus scrapes both services, and Grafana is provisioned with a starter UpTime dashboard.
+The external metrics stack is optional. Run `make metrics-up` when you want Prometheus and Grafana in addition to the built-in console.
 
 ### Worker dashboard
 
