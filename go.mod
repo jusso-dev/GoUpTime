@@ -2,6 +2,8 @@ module github.com/jusso-dev/uptime
 
 go 1.25.0
 
+toolchain go1.26.5
+
 require (
 	github.com/MicahParks/keyfunc/v3 v3.8.0
 	github.com/PaesslerAG/jsonpath v0.1.1
